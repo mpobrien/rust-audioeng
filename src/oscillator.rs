@@ -2,6 +2,7 @@ use std::{fs::File, io};
 
 const FREQ_44_1KHZ: u64 = 44100;
 
+#[derive(Clone, Copy)]
 pub enum OscillatorShape {
     Sine,
     Square,
