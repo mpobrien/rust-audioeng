@@ -357,6 +357,10 @@
       "members": [
         {
           "type": "SYMBOL",
+          "name": "node_call"
+        },
+        {
+          "type": "SYMBOL",
           "name": "binary_expr"
         },
         {
@@ -455,12 +459,7 @@
       "name": "comment"
     }
   ],
-  "conflicts": [
-    [
-      "binding_stmt",
-      "voices_stmt"
-    ]
-  ],
+  "conflicts": [],
   "precedences": [],
   "externals": [],
   "inline": [],

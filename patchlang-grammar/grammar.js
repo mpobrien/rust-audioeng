@@ -111,6 +111,7 @@ module.exports = grammar({
 
     // param values allow arithmetic and bare identifiers
     param_value: $ => choice(
+      $.node_call,    // inline modulator: lfo { rate = 0.5, min = 200, max = 2000 }
       $.binary_expr,
       $.primary,
     ),

@@ -52,13 +52,17 @@ fn demo_notes(note_secs: f32) -> Vec<(f64, f32, f32)> {
     ].iter().map(|&f| (f, 0.8f32, note_secs)).collect()
 }
 
-fn load_and_play(
+/// Load, parse, and render to samples — but don't start audio yet.
+/// Separating render from play lets the watch loop validate the new
+/// version before it stops the currently-playing audio.
+fn load_samples(
     path: &str,
     patch_name: Option<&str>,
     sample_rate: u32,
-) -> Result<output::AudioOutput, String> {
-    let src = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let env = lang::parse(&src);
+) -> Result<(String, Vec<f64>), String> {
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| format!("could not read file: {e}"))?;
+    let env = lang::parse(&src)?;
 
     if env.patches.is_empty() {
         return Err(format!("no patches defined in '{path}'"));
@@ -75,9 +79,18 @@ fn load_and_play(
         None => env.patches.keys().next().unwrap().clone(),
     };
 
-    println!("playing patch '{name}' at {sample_rate} Hz");
     let notes = demo_notes(0.35);
-    let samples = lang::render_patch(&env, &name, &notes, sample_rate);
+    let samples = lang::render_patch(&env, &name, &notes, sample_rate)?;
+    Ok((name, samples))
+}
+
+fn load_and_play(
+    path: &str,
+    patch_name: Option<&str>,
+    sample_rate: u32,
+) -> Result<output::AudioOutput, String> {
+    let (name, samples) = load_samples(path, patch_name, sample_rate)?;
+    println!("playing patch '{name}' at {sample_rate} Hz");
     Ok(output::play_samples(samples))
 }
 
@@ -88,37 +101,52 @@ fn run_watch(path: &str, patch_name: Option<&str>, sample_rate: u32) -> ! {
 
     println!("watching '{path}' for changes (Ctrl-C to quit)");
 
-    let mut last_mtime = file_mtime(path);
     let poll = Duration::from_millis(150);
+    let mut last_mtime = file_mtime(path);
+
+    // Rendered samples for the current valid version — kept so we can loop
+    // without re-parsing, and so a broken save doesn't interrupt playback.
+    let mut current_samples: Option<Vec<f64>> = None;
+    let mut current_audio:   Option<output::AudioOutput> = None;
+
+    // Initial load
+    match load_samples(path, patch_name, sample_rate) {
+        Ok((name, samples)) => {
+            println!("playing patch '{name}'");
+            current_audio   = Some(output::play_samples(samples.clone()));
+            current_samples = Some(samples);
+        }
+        Err(e) => eprintln!("error: {e}"),
+    }
 
     loop {
-        let audio = match load_and_play(path, patch_name, sample_rate) {
-            Ok(a) => a,
-            Err(e) => {
-                eprintln!("error: {e}");
-                // Wait for the file to change before retrying
-                loop {
-                    std::thread::sleep(poll);
-                    let m = file_mtime(path);
-                    if m != last_mtime { last_mtime = m; break; }
-                }
-                continue;
-            }
-        };
+        std::thread::sleep(poll);
 
-        // Poll until the file changes or playback ends naturally (then loop it)
-        loop {
-            std::thread::sleep(poll);
-            let m = file_mtime(path);
-            if m != last_mtime {
-                last_mtime = m;
-                drop(audio); // stops CPAL stream immediately
-                println!("─ file changed, reloading…");
-                break;
+        // ── file changed? ──────────────────────────────────────────────────
+        let m = file_mtime(path);
+        if m != last_mtime {
+            last_mtime = m;
+
+            match load_samples(path, patch_name, sample_rate) {
+                Ok((name, samples)) => {
+                    // New version is valid: swap out audio atomically.
+                    drop(current_audio.take());
+                    println!("─ reloaded patch '{name}'");
+                    current_audio   = Some(output::play_samples(samples.clone()));
+                    current_samples = Some(samples);
+                }
+                Err(e) => {
+                    // Bad save: keep playing what we had, print the problem.
+                    eprintln!("─ error (keeping previous version):\n{e}");
+                }
             }
-            if audio.is_done() {
-                drop(audio);
-                break; // replay same file
+        }
+
+        // ── playback finished? loop it ─────────────────────────────────────
+        if current_audio.as_ref().map_or(false, |a| a.is_done()) {
+            drop(current_audio.take());
+            if let Some(ref samples) = current_samples {
+                current_audio = Some(output::play_samples(samples.clone()));
             }
         }
     }
@@ -126,6 +154,154 @@ fn run_watch(path: &str, patch_name: Option<&str>, sample_rate: u32) -> ! {
 
 fn file_mtime(path: &str) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+#[cfg(test)]
+mod snap {
+    use std::path::Path;
+
+    const BLOCKS: usize = 10;
+    const APPROX_TOL: f64 = 1e-6;
+
+    struct Snapshot {
+        samples: usize,
+        peak: f64,
+        rms: f64,
+        rms_blocks: Vec<f64>,
+        hash: u64,
+    }
+
+    /// Fail if the hash changes — any bit difference is a regression.
+    pub fn assert_snapshot(name: &str, samples: &[f64]) {
+        check(name, samples, false);
+    }
+
+    /// Fail only if the stats diverge beyond tolerance — ignores tiny FP deltas.
+    #[allow(dead_code)]
+    pub fn assert_snapshot_approx(name: &str, samples: &[f64]) {
+        check(name, samples, true);
+    }
+
+    fn check(name: &str, samples: &[f64], approx: bool) {
+        let snap_dir = Path::new("tests/snapshots");
+        std::fs::create_dir_all(snap_dir).unwrap();
+        let path = snap_dir.join(format!("{name}.snap"));
+        let actual = compute(samples);
+        if path.exists() {
+            let stored = load(&path);
+            if stored.hash == actual.hash {
+                return;
+            }
+            let diffs = stat_diffs(&stored, &actual);
+            if approx && diffs.is_empty() {
+                return;
+            }
+            fail(name, &stored, &actual, approx, &diffs);
+        } else {
+            save(&path, &actual);
+            println!("snapshot written: {}", path.display());
+        }
+    }
+
+    fn compute(samples: &[f64]) -> Snapshot {
+        let n = samples.len();
+        let peak = samples.iter().copied().map(f64::abs).fold(0f64, f64::max);
+        let rms = (samples.iter().map(|s| s * s).sum::<f64>() / n as f64).sqrt();
+        let rms_blocks = (0..BLOCKS)
+            .map(|i| {
+                let lo = i * n / BLOCKS;
+                let hi = ((i + 1) * n / BLOCKS).min(n);
+                let b = &samples[lo..hi];
+                (b.iter().map(|s| s * s).sum::<f64>() / b.len() as f64).sqrt()
+            })
+            .collect();
+        Snapshot { samples: n, peak, rms, rms_blocks, hash: fnv1a(samples) }
+    }
+
+    fn fnv1a(samples: &[f64]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &s in samples {
+            for byte in s.to_bits().to_le_bytes() {
+                h ^= byte as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+        h
+    }
+
+    fn save(path: &Path, s: &Snapshot) {
+        let blocks = s.rms_blocks.iter().map(|v| format!("{v:.8}")).collect::<Vec<_>>().join(" ");
+        std::fs::write(
+            path,
+            format!(
+                "samples = {}\npeak = {:.8}\nrms = {:.8}\nrms_blocks = {}\nhash = {:#018x}\n",
+                s.samples, s.peak, s.rms, blocks, s.hash
+            ),
+        )
+        .unwrap();
+    }
+
+    fn load(path: &Path) -> Snapshot {
+        let src = std::fs::read_to_string(path).unwrap();
+        let mut samples = 0usize;
+        let mut peak = 0f64;
+        let mut rms = 0f64;
+        let mut rms_blocks = Vec::new();
+        let mut hash = 0u64;
+        for line in src.lines() {
+            let Some((k, v)) = line.split_once(" = ") else { continue };
+            match k {
+                "samples"    => samples = v.parse().unwrap(),
+                "peak"       => peak = v.parse().unwrap(),
+                "rms"        => rms = v.parse().unwrap(),
+                "rms_blocks" => rms_blocks = v.split(' ').map(|s| s.parse().unwrap()).collect(),
+                "hash"       => hash = u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap(),
+                _ => {}
+            }
+        }
+        Snapshot { samples, peak, rms, rms_blocks, hash }
+    }
+
+    fn stat_diffs(stored: &Snapshot, actual: &Snapshot) -> Vec<String> {
+        let mut diffs = Vec::new();
+        if stored.samples != actual.samples {
+            diffs.push(format!("  samples    {} → {}", stored.samples, actual.samples));
+        }
+        if (stored.peak - actual.peak).abs() > APPROX_TOL {
+            diffs.push(format!("  peak       {:.6} → {:.6}", stored.peak, actual.peak));
+        }
+        if (stored.rms - actual.rms).abs() > APPROX_TOL {
+            diffs.push(format!("  rms        {:.6} → {:.6}", stored.rms, actual.rms));
+        }
+        for (i, (s, a)) in stored.rms_blocks.iter().zip(&actual.rms_blocks).enumerate() {
+            if (s - a).abs() > APPROX_TOL {
+                diffs.push(format!("  block[{i:02}]   {s:.6} → {a:.6}"));
+            }
+        }
+        diffs
+    }
+
+    fn fail(name: &str, stored: &Snapshot, actual: &Snapshot, approx: bool, diffs: &[String]) -> ! {
+        let mut msg = format!("snapshot mismatch: '{name}'");
+        if diffs.is_empty() {
+            msg.push_str("\n  (hash changed but stats are within tolerance)");
+        } else {
+            for d in diffs {
+                msg.push('\n');
+                msg.push_str(d);
+            }
+        }
+        msg.push_str(&format!(
+            "\n  hash       {:#018x} → {:#018x}",
+            stored.hash, actual.hash
+        ));
+        if approx && !diffs.is_empty() || !approx {
+            msg.push_str(&format!(
+                "\n  (delete tests/snapshots/{name}.snap to regenerate)"
+            ));
+        }
+        panic!("{msg}");
+    }
 }
 
 #[cfg(test)]
@@ -616,7 +792,7 @@ mod tests {
             }
         "#;
 
-        let env = parse(src);
+        let env = parse(src).unwrap();
 
         // C major scale, each note 0.3 s
         let scale: &[(f64, f32, f32)] = &[
@@ -630,8 +806,8 @@ mod tests {
             (523.25, 0.8, 0.3),
         ];
 
-        let samples = render_patch(&env, "bass", scale, SAMPLE_RATE);
-        assert!(!samples.is_empty());
+        let samples = render_patch(&env, "bass", scale, SAMPLE_RATE).unwrap();
+        crate::snap::assert_snapshot("lang_bass", &samples);
 
         let file = File::create("lang_bass.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
@@ -653,7 +829,7 @@ mod tests {
             }
         "#;
 
-        let env = parse(src);
+        let env = parse(src).unwrap();
 
         // A minor chord (A, C, E)
         let notes: &[(f64, f32, f32)] = &[
@@ -662,8 +838,8 @@ mod tests {
             (659.25, 0.9, 1.0),
         ];
 
-        let samples = render_patch(&env, "supersaw", notes, SAMPLE_RATE);
-        assert!(!samples.is_empty());
+        let samples = render_patch(&env, "supersaw", notes, SAMPLE_RATE).unwrap();
+        crate::snap::assert_snapshot("lang_supersaw", &samples);
 
         let file = File::create("lang_supersaw.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
@@ -685,7 +861,7 @@ mod tests {
             }
         "#;
 
-        let env = parse(src);
+        let env = parse(src).unwrap();
 
         let notes: &[(f64, f32, f32)] = &[
             (440.00, 0.8, 0.4),
@@ -693,11 +869,99 @@ mod tests {
             (523.25, 0.8, 0.4),
         ];
 
-        let samples = render_patch(&env, "lead", notes, SAMPLE_RATE);
-        assert!(!samples.is_empty());
+        let samples = render_patch(&env, "lead", notes, SAMPLE_RATE).unwrap();
+        crate::snap::assert_snapshot("lang_lead_space", &samples);
 
         let file = File::create("lang_lead_space.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_lfo_minmax() {
+        use crate::lang::{parse, render_patch};
+
+        // Inline lfo with min/max: cutoff sweeps 200–2000 Hz at 0.5 Hz
+        let src = r#"
+            wub = patch {
+              osc { shape = saw, freq = freq }
+                | lpf { cutoff = lfo { rate = 0.5, min = 200, max = 2000 }, q = 1.2 }
+                | adsr { attack = 0.02, decay = 0.1, sustain = 0.8, release = 0.2 }
+            }
+        "#;
+
+        let env = parse(src).unwrap();
+        let notes: &[(f64, f32, f32)] = &[(220.0, 0.8, 0.8), (330.0, 0.8, 0.8)];
+        let samples = render_patch(&env, "wub", notes, SAMPLE_RATE).unwrap();
+        crate::snap::assert_snapshot("lang_lfo_minmax", &samples);
+
+        let file = File::create("lang_lfo_minmax.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_lfo_scale_offset() {
+        use crate::lang::{parse, render_patch};
+
+        // Inline lfo with scale/offset: same sweep as above, different syntax
+        let src = r#"
+            wub = patch {
+              osc { shape = saw, freq = freq }
+                | lpf { cutoff = lfo { rate = 0.5, scale = 900, offset = 1100 }, q = 1.2 }
+                | adsr { attack = 0.02, decay = 0.1, sustain = 0.8, release = 0.2 }
+            }
+        "#;
+
+        let env = parse(src).unwrap();
+        let notes: &[(f64, f32, f32)] = &[(220.0, 0.8, 0.8), (330.0, 0.8, 0.8)];
+        let samples = render_patch(&env, "wub", notes, SAMPLE_RATE).unwrap();
+        crate::snap::assert_snapshot("lang_lfo_scale_offset", &samples);
+
+        let file = File::create("lang_lfo_scale_offset.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_lfo_named_binding() {
+        use crate::lang::{parse, render_patch};
+
+        // Named binding for lfo, then referenced by name in lpf cutoff param
+        let src = r#"
+            wub = patch {
+              sweep = lfo { rate = 0.8, min = 300, max = 1800 }
+              osc { shape = saw, freq = freq }
+                | lpf { cutoff = sweep, q = 1.0 }
+                | adsr { attack = 0.02, decay = 0.1, sustain = 0.8, release = 0.2 }
+            }
+        "#;
+
+        let env = parse(src).unwrap();
+        let notes: &[(f64, f32, f32)] = &[(220.0, 0.8, 0.8), (330.0, 0.8, 0.8)];
+        let samples = render_patch(&env, "wub", notes, SAMPLE_RATE).unwrap();
+        crate::snap::assert_snapshot("lang_lfo_named", &samples);
+
+        let file = File::create("lang_lfo_named.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_lfo_mixed_params_error() {
+        use crate::lang::parse;
+
+        // Mixing min/max with scale/offset should be a build-time error
+        let src = r#"
+            bad = patch {
+              osc { shape = saw, freq = freq }
+                | lpf { cutoff = lfo { rate = 1.0, min = 200, max = 2000, scale = 900 }, q = 1.0 }
+                | adsr { attack = 0.01, decay = 0.1, sustain = 0.8, release = 0.1 }
+            }
+        "#;
+
+        let env = parse(src).unwrap();
+        let notes: &[(f64, f32, f32)] = &[(440.0, 0.8, 0.5)];
+        let result = crate::lang::render_patch(&env, "bad", notes, SAMPLE_RATE);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("cannot mix min/max and scale/offset"), "unexpected error: {msg}");
     }
 
     #[test]

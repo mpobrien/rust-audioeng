@@ -233,6 +233,10 @@
           "named": true
         },
         {
+          "type": "node_call",
+          "named": true
+        },
+        {
           "type": "primary",
           "named": true
         }
