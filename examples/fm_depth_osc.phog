@@ -1,0 +1,28 @@
+// FM with oscillating depth
+//
+// A slow oscillator (2 Hz) drives the modulation depth instead of an envelope.
+// At depth = +1: carrier swings ±300 Hz, rich with FM sidebands.
+// At depth =  0: modulation vanishes, pure sine.
+// At depth = -1: modulation inverts (equivalent to phase-shifting the modulator
+//                by π), same spectral richness but different phase relationship.
+//
+// The result is a rhythmic timbral pulse — the sound brightens and darkens
+// twice per second as the depth oscillator cycles.
+
+pulse = patch {
+  osc {
+    shape  = sine,
+    freq   = osc {
+      shape = square,
+      freq   = freq * 1.4,
+      deviation = 300,
+      depth  = osc { freq = 2 },
+      offset = freq
+    }
+  }
+  | hpf { cutoff = 1600 }
+  | delay { time = 0.8, feedback = 0.1 }
+    | adsr { attack = 0.01, decay = 4.2, sustain = 0, release = 0.1 }
+}
+
+melody = phrase { dur=whole, tempo=60, [c4 g4]  } | pulse

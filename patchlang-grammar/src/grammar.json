@@ -11,7 +11,7 @@
     },
     "comment": {
       "type": "PATTERN",
-      "value": "#[^\\n]*"
+      "value": "\\/\\/[^\\n]*"
     },
     "declaration": {
       "type": "CHOICE",

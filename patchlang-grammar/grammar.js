@@ -9,7 +9,7 @@ module.exports = grammar({
   rules: {
     source_file: $ => repeat($.declaration),
 
-    comment: $ => /#[^\n]*/,
+    comment: $ => /\/\/[^\n]*/,
 
     // ── top-level declarations ─────────────────────────────────────────
 
