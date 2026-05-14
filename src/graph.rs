@@ -3,22 +3,29 @@ use crate::delay::DelayNode;
 use crate::envelope::{Adsr, EnvelopedSource};
 use crate::filter::{BiquadFilter, CompiledParam, FilterType, FilteredSource, ModulatedFilterSource};
 use crate::mixer::MixedSource;
-use crate::oscillator::{Oscillator, OscillatorShape, SampleSource};
+use crate::oscillator::{ConstantSource, Oscillator, OscillatorShape, SampleSource, waveform};
 
 /// A node parameter: either a fixed value or a signal from another node.
-///
-/// For `Signal`, the actual value each sample is `modulator * scale + offset`.
 pub enum ParamDef {
     /// Fixed value.
     Const(f64),
-    /// Value driven by another node. `offset` is the base, `scale` is the modulation depth.
+    /// Value driven by another node. Output each sample: `node * scale + offset`.
     Signal { node: Box<NodeDef>, scale: f64, offset: f64 },
+    /// Like `Signal`, but the modulation depth is itself a signal (e.g. an ADSR).
+    /// Output each sample: `node * depth * scale + offset`.
+    ModSignal { node: Box<NodeDef>, depth: Box<NodeDef>, scale: f64, offset: f64 },
 }
 
 /// A node in the audio graph. Compose these into a tree, then call [`compile`].
 pub enum NodeDef {
-    /// Periodic waveform generator.
+    /// Outputs a fixed constant value every sample — useful as a neutral source.
+    Const(f64),
+
+    /// Periodic waveform generator with fixed frequency.
     Oscillator { shape: OscillatorShape, frequency: f64 },
+
+    /// Periodic waveform generator with signal-rate frequency modulation.
+    FmOscillator { shape: OscillatorShape, frequency: ParamDef },
 
     /// Biquad filter. Coefficients are computed once when both params are
     /// `Const`, or recomputed every sample when either is `Signal`.
@@ -52,8 +59,15 @@ pub enum NodeDef {
 /// Compiles a [`NodeDef`] tree into a runnable [`SampleSource`].
 pub fn compile(node: NodeDef, sample_rate: u32) -> Box<dyn SampleSource> {
     match node {
+        NodeDef::Const(v) => Box::new(ConstantSource(v)),
         NodeDef::Oscillator { shape, frequency } => {
             Box::new(Oscillator::new(shape, frequency, sample_rate))
+        }
+        NodeDef::FmOscillator { shape, frequency } => {
+            if let ParamDef::Const(v) = frequency {
+                return Box::new(Oscillator::new(shape, v, sample_rate));
+            }
+            Box::new(FmSource { shape, sample_rate, phase: 0, freq: compile_param(frequency, sample_rate) })
         }
         NodeDef::Filter { kind, cutoff_hz, q, source } => {
             let init_cutoff = param_initial_value(&cutoff_hz);
@@ -111,7 +125,8 @@ pub fn compile(node: NodeDef, sample_rate: u32) -> Box<dyn SampleSource> {
 fn param_initial_value(param: &ParamDef) -> f64 {
     match param {
         ParamDef::Const(v) => *v,
-        ParamDef::Signal { offset, .. } => *offset,
+        ParamDef::Signal    { offset, .. } => *offset,
+        ParamDef::ModSignal { offset, .. } => *offset,
     }
 }
 
@@ -125,5 +140,32 @@ fn compile_param(param: ParamDef, sample_rate: u32) -> CompiledParam {
             scale,
             offset,
         },
+        ParamDef::ModSignal { node, depth, scale, offset } => CompiledParam::ModSignal {
+            source: compile(*node, sample_rate),
+            depth:  compile(*depth, sample_rate),
+            scale,
+            offset,
+        },
+    }
+}
+
+/// Oscillator whose instantaneous frequency is driven by a [`CompiledParam`].
+/// This correctly handles `ModSignal` (depth-enveloped FM) and plain `Signal`.
+struct FmSource {
+    shape:       OscillatorShape,
+    sample_rate: u32,
+    phase:       u32,
+    freq:        CompiledParam,
+}
+
+impl SampleSource for FmSource {
+    fn next_samples(&mut self, buf: &mut [f64]) {
+        for sample in buf.iter_mut() {
+            let freq = self.freq.next_value().max(0.0);
+            let t    = self.phase as f64 / u32::MAX as f64;
+            *sample  = waveform(self.shape, t);
+            let inc  = (freq / self.sample_rate as f64 * (u32::MAX as f64 + 1.0)) as u32;
+            self.phase = self.phase.wrapping_add(inc);
+        }
     }
 }

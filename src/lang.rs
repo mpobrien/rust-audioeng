@@ -23,6 +23,7 @@ fn patchlang_language() -> Language {
 pub struct PatchEnv {
     pub patches: HashMap<String, PatchDecl>,
     pub effects: HashMap<String, EffectDecl>,
+    pub phrases: HashMap<String, PhraseDecl>,
 }
 
 pub struct PatchDecl {
@@ -48,6 +49,33 @@ pub struct EffectDecl {
     pub name: String,
     pub chain: PipeChain,
 }
+
+pub struct PhraseDecl {
+    pub name: String,
+    pub tempo: f64,
+    pub default_dur: String,  // raw identifier, resolved to NoteValue at render time
+    pub notes: Vec<Option<NoteItem>>,  // None = rest
+    pub patch_name: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum NoteValue {
+    Whole, DottedHalf, Half, DottedQuarter, Quarter,
+    DottedEighth, Eighth, DottedSixteenth, Sixteenth,
+}
+
+#[derive(Clone, Debug)]
+pub struct NoteItem {
+    pub name: NoteName,
+    pub accidental: Option<Accidental>,
+    pub octave: u8,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum NoteName { C, D, E, F, G, A, B }
+
+#[derive(Clone, Copy, Debug)]
+pub enum Accidental { Sharp, Flat }
 
 #[derive(Clone, Debug)]
 pub struct PipeChain {
@@ -137,6 +165,7 @@ pub fn parse(src: &str) -> Result<PatchEnv, String> {
     let src_bytes = src.as_bytes();
     let mut patches = HashMap::new();
     let mut effects = HashMap::new();
+    let mut phrases = HashMap::new();
 
     let mut cursor = root.walk();
     for decl_node in root.named_children(&mut cursor) {
@@ -153,11 +182,15 @@ pub fn parse(src: &str) -> Result<PatchEnv, String> {
                 let e = parse_effect_decl(inner, src_bytes);
                 effects.insert(e.name.clone(), e);
             }
+            "phrase_decl" => {
+                let ph = parse_phrase_decl(inner, src_bytes);
+                phrases.insert(ph.name.clone(), ph);
+            }
             k => eprintln!("warning: unexpected declaration kind '{k}'"),
         }
     }
 
-    Ok(PatchEnv { patches, effects })
+    Ok(PatchEnv { patches, effects, phrases })
 }
 
 fn parse_patch_decl(node: Node, src: &[u8]) -> PatchDecl {
@@ -309,6 +342,124 @@ fn parse_primary(node: Node, src: &[u8]) -> Expr {
     }
 }
 
+fn parse_phrase_decl(node: Node, src: &[u8]) -> PhraseDecl {
+    let name       = text(node.child_by_field_name("name").unwrap(), src);
+    let patch_name = text(node.child_by_field_name("patch").unwrap(), src);
+    let mut cursor = node.walk();
+    let phrase_call = node.named_children(&mut cursor)
+        .find(|c| c.kind() == "phrase_call")
+        .expect("phrase_decl has no phrase_call");
+    parse_phrase_call(phrase_call, src, name, patch_name)
+}
+
+fn parse_phrase_call(node: Node, src: &[u8], name: String, patch_name: String) -> PhraseDecl {
+    let mut tempo       = 120.0f64;
+    let mut default_dur = "quarter".to_string();
+    let mut notes       = Vec::new();
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "phrase_param_list" => {
+                let mut pcursor = child.walk();
+                for param in child.named_children(&mut pcursor) {
+                    if param.kind() != "named_param" { continue; }
+                    let key = text(param.child_by_field_name("key").unwrap(), src);
+                    let val_node = param.child_by_field_name("value").unwrap();
+                    let val_text = text(val_node.named_child(0).unwrap_or(val_node), src);
+                    match key.as_str() {
+                        "tempo" => { tempo = val_text.parse().unwrap_or(120.0); }
+                        "dur"   => { default_dur = val_text; }
+                        k => eprintln!("warning: unknown phrase param '{k}'"),
+                    }
+                }
+            }
+            "note_list" => {
+                let mut ncursor = child.walk();
+                for tok_node in child.named_children(&mut ncursor) {
+                    if tok_node.kind() != "note_token" { continue; }
+                    let inner = tok_node.named_child(0).expect("empty note_token");
+                    let tok = text(inner, src);
+                    match inner.kind() {
+                        "rest" => notes.push(None),
+                        "note" => notes.push(Some(parse_note_item(&tok))),
+                        k => eprintln!("warning: unexpected note_token kind '{k}'"),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    PhraseDecl { name, tempo, default_dur, notes, patch_name }
+}
+
+fn parse_note_item(s: &str) -> NoteItem {
+    let mut chars = s.chars().peekable();
+    let name = match chars.next().unwrap_or('c') {
+        'c' => NoteName::C, 'd' => NoteName::D, 'e' => NoteName::E, 'f' => NoteName::F,
+        'g' => NoteName::G, 'a' => NoteName::A, 'b' => NoteName::B,
+        _   => NoteName::C,
+    };
+    let accidental = match chars.peek() {
+        Some('#') => { chars.next(); Some(Accidental::Sharp) }
+        Some('b') => { chars.next(); Some(Accidental::Flat)  }
+        _         => None,
+    };
+    let octave = match chars.peek() {
+        Some(&c) if c.is_ascii_digit() => c as u8 - b'0',
+        _ => 4,
+    };
+    NoteItem { name, accidental, octave }
+}
+
+fn parse_note_value(s: &str) -> Result<NoteValue, String> {
+    match s {
+        "whole"            => Ok(NoteValue::Whole),
+        "dotted_half"      => Ok(NoteValue::DottedHalf),
+        "half"             => Ok(NoteValue::Half),
+        "dotted_quarter"   => Ok(NoteValue::DottedQuarter),
+        "quarter"          => Ok(NoteValue::Quarter),
+        "dotted_eighth"    => Ok(NoteValue::DottedEighth),
+        "eighth"           => Ok(NoteValue::Eighth),
+        "dotted_sixteenth" => Ok(NoteValue::DottedSixteenth),
+        "sixteenth"        => Ok(NoteValue::Sixteenth),
+        s => Err(format!(
+            "unknown note value '{s}' — expected: whole, half, quarter, eighth, sixteenth, or dotted_*"
+        )),
+    }
+}
+
+fn note_to_freq(item: &NoteItem) -> f64 {
+    let semitone = match item.name {
+        NoteName::C => 0, NoteName::D => 2, NoteName::E => 4, NoteName::F => 5,
+        NoteName::G => 7, NoteName::A => 9, NoteName::B => 11,
+    };
+    let acc = match item.accidental {
+        None                    =>  0,
+        Some(Accidental::Sharp) =>  1,
+        Some(Accidental::Flat)  => -1,
+    };
+    let midi = 12 * (item.octave as i32 + 1) + semitone + acc;
+    440.0 * 2.0f64.powf((midi - 69) as f64 / 12.0)
+}
+
+fn note_value_secs(val: &NoteValue, tempo: f64) -> f32 {
+    let quarter = 60.0 / tempo;
+    let beats: f64 = match val {
+        NoteValue::Whole           => 4.0,
+        NoteValue::DottedHalf      => 3.0,
+        NoteValue::Half            => 2.0,
+        NoteValue::DottedQuarter   => 1.5,
+        NoteValue::Quarter         => 1.0,
+        NoteValue::DottedEighth    => 0.75,
+        NoteValue::Eighth          => 0.5,
+        NoteValue::DottedSixteenth => 0.375,
+        NoteValue::Sixteenth       => 0.25,
+    };
+    (quarter * beats) as f32
+}
+
 fn text(node: Node, src: &[u8]) -> String {
     std::str::from_utf8(&src[node.byte_range()])
         .expect("non-utf8 source")
@@ -413,10 +564,13 @@ impl<'a> BuildCtx<'a> {
 
     fn build_node_call(&self, call: &NodeCall, source: Option<NodeDef>) -> BuildResult {
         match call.kind.as_str() {
-            "osc" | "lfo" => {
+            "osc" => {
                 let shape = self.param_shape(call, "shape").unwrap_or(OscillatorShape::Sine);
-                let freq  = self.param_f64(call, "freq")?.unwrap_or(self.freq);
-                Ok(NodeDef::Oscillator { shape, frequency: freq })
+                let freq  = self.param_def(call, "freq", self.freq)?;
+                Ok(match freq {
+                    ParamDef::Const(f) => NodeDef::Oscillator { shape, frequency: f },
+                    freq               => NodeDef::FmOscillator { shape, frequency: freq },
+                })
             }
             "lpf"   => self.build_filter(call, FilterType::LowPass,  source),
             "hpf"   => self.build_filter(call, FilterType::HighPass, source),
@@ -452,10 +606,13 @@ impl<'a> BuildCtx<'a> {
         let decay   = self.param_f64(call, "decay")?.unwrap_or(0.1)    as f32;
         let sustain = self.param_f64(call, "sustain")?.unwrap_or(0.7)  as f32;
         let release = self.param_f64(call, "release")?.unwrap_or(0.1)  as f32;
+        // When used as a standalone envelope generator (no audio source), apply to a
+        // constant 1.0 signal so the output is a 0..1 amplitude curve.
+        let src = source.unwrap_or(NodeDef::Const(1.0));
         Ok(NodeDef::Envelope {
             adsr: Adsr { attack_secs: attack, decay_secs: decay, sustain_level: sustain, release_secs: release },
             duration_secs: self.duration_secs,
-            source: Box::new(source.ok_or("adsr requires a source")?),
+            source: Box::new(src),
         })
     }
 
@@ -463,7 +620,8 @@ impl<'a> BuildCtx<'a> {
         let time_param = self.param_def(call, "time", 0.25)?;
         let max_delay_secs = match &time_param {
             ParamDef::Const(v) => *v as f32 + 0.01,
-            ParamDef::Signal { scale, offset, .. } => (offset + scale.abs()) as f32 + 0.01,
+            ParamDef::Signal    { scale, offset, .. } => (offset + scale.abs()) as f32 + 0.01,
+            ParamDef::ModSignal { scale, offset, .. } => (offset + scale.abs()) as f32 + 0.01,
         };
         let feedback = self.param_f64(call, "feedback")?.unwrap_or(0.0);
         let mix      = self.param_f64(call, "mix")?.unwrap_or(0.5);
@@ -497,9 +655,9 @@ impl<'a> BuildCtx<'a> {
         call.params.iter().any(|p| matches!(p, ParamItem::Named { key: k, .. } if k == key))
     }
 
-    fn build_lfo_signal(&self, call: &NodeCall) -> Result<ParamDef, String> {
+    fn build_osc_signal(&self, call: &NodeCall) -> Result<ParamDef, String> {
         let shape = self.param_shape(call, "shape").unwrap_or(OscillatorShape::Sine);
-        let rate  = self.param_f64(call, "rate")?.unwrap_or(1.0);
+        let freq  = self.param_f64(call, "freq")?.unwrap_or(1.0);
 
         let has_min    = self.has_param(call, "min");
         let has_max    = self.has_param(call, "max");
@@ -507,12 +665,12 @@ impl<'a> BuildCtx<'a> {
         let has_offset = self.has_param(call, "offset");
 
         if (has_min || has_max) && (has_scale || has_offset) {
-            return Err("lfo: cannot mix min/max and scale/offset — use one set or the other".to_string());
+            return Err("osc: cannot mix min/max and scale/offset — use one set or the other".to_string());
         }
 
         let (scale, offset) = if has_min || has_max {
-            let min = self.param_f64(call, "min")?.ok_or("lfo min/max mode: 'min' is required")?;
-            let max = self.param_f64(call, "max")?.ok_or("lfo min/max mode: 'max' is required")?;
+            let min = self.param_f64(call, "min")?.ok_or("osc min/max mode: 'min' is required")?;
+            let max = self.param_f64(call, "max")?.ok_or("osc min/max mode: 'max' is required")?;
             ((max - min) / 2.0, (min + max) / 2.0)
         } else {
             let scale  = self.param_f64(call, "scale")?.unwrap_or(1.0);
@@ -520,16 +678,39 @@ impl<'a> BuildCtx<'a> {
             (scale, offset)
         };
 
-        Ok(ParamDef::Signal {
-            node: Box::new(NodeDef::Oscillator { shape, frequency: rate }),
-            scale,
-            offset,
+        let depth_node = self.build_osc_depth(call)?;
+        let modulator  = Box::new(NodeDef::Oscillator { shape, frequency: freq });
+
+        Ok(match depth_node {
+            Some(depth) => ParamDef::ModSignal { node: modulator, depth: Box::new(depth), scale, offset },
+            None        => ParamDef::Signal    { node: modulator, scale, offset },
         })
+    }
+
+    fn build_osc_depth(&self, call: &NodeCall) -> Result<Option<NodeDef>, String> {
+        let depth_expr = call.params.iter().find_map(|p| match p {
+            ParamItem::Named { key, value } if key == "depth" => Some(value),
+            _ => None,
+        });
+        let Some(expr) = depth_expr else { return Ok(None) };
+        let node = match expr {
+            Expr::Call(depth_call) => self.build_node_call(depth_call, None)?,
+            Expr::Ident(name) => {
+                let binding = self.bindings.get(name)
+                    .ok_or_else(|| format!("unknown depth binding '{name}'"))?;
+                match binding {
+                    Expr::Call(c) => self.build_node_call(c, None)?,
+                    _ => return Err("osc depth must be a node call like adsr {{ ... }}".to_string()),
+                }
+            }
+            _ => return Err("osc depth must be a node call like adsr {{ ... }}".to_string()),
+        };
+        Ok(Some(node))
     }
 
     fn node_call_to_signal(&self, call: &NodeCall) -> Result<ParamDef, String> {
         match call.kind.as_str() {
-            "lfo" => self.build_lfo_signal(call),
+            "osc" => self.build_osc_signal(call),
             k => Err(format!("'{k}' cannot be used as a modulator signal")),
         }
     }
@@ -540,7 +721,7 @@ impl<'a> BuildCtx<'a> {
             Expr::Chain(chain) if chain.segments.is_empty() => {
                 self.node_call_to_signal(&chain.head)
             }
-            _ => Err("binding is not a modulator signal (expected lfo{...})".to_string()),
+            _ => Err("binding is not a modulator signal (expected osc{...})".to_string()),
         }
     }
 
@@ -639,6 +820,65 @@ pub fn build_note(
         .ok_or_else(|| format!("patch '{patch_name}' not found"))?;
     let ctx = BuildCtx::from_patch(freq, velocity, duration_secs, patch, &env.effects);
     ctx.build_patch(patch)
+}
+
+/// Render a named phrase (note sequence + instrument) to a sample buffer.
+pub fn render_phrase(env: &PatchEnv, phrase_name: &str, sample_rate: u32) -> Result<Vec<f64>, String> {
+    let phrase = env.phrases.get(phrase_name)
+        .ok_or_else(|| format!("phrase '{phrase_name}' not found"))?;
+
+    let dur_val  = parse_note_value(&phrase.default_dur)?;
+    let dur_secs = note_value_secs(&dur_val, phrase.tempo);
+    let mut all_samples = Vec::new();
+    const CHUNK: usize = 256;
+
+    let last_idx = phrase.notes.len().saturating_sub(1);
+    for (idx, note_opt) in phrase.notes.iter().enumerate() {
+        let is_last = idx == last_idx;
+        match note_opt {
+            None => {
+                let n = (dur_secs * sample_rate as f32) as usize;
+                all_samples.extend(std::iter::repeat(0.0f64).take(n));
+            }
+            Some(note) => {
+                let freq = note_to_freq(note);
+                let node = build_note(env, &phrase.patch_name, freq, 0.8, dur_secs)?;
+                let mut source = compile(node, sample_rate);
+
+                if is_last {
+                    // Let the final note ring out fully so the loop sounds natural.
+                    let max_samples = ((dur_secs + 4.0) * sample_rate as f32) as usize;
+                    let mut rendered = 0;
+                    while !source.is_done() && rendered < max_samples {
+                        let n = CHUNK.min(max_samples - rendered);
+                        let mut chunk = vec![0.0f64; n];
+                        source.next_samples(&mut chunk);
+                        all_samples.extend_from_slice(&chunk);
+                        rendered += n;
+                    }
+                } else {
+                    // Each inner note occupies exactly its time slot so the next note
+                    // starts on the beat. A short fade prevents clicks at the boundary.
+                    let slot_samples = (dur_secs * sample_rate as f32) as usize;
+                    let mut slot = vec![0.0f64; slot_samples];
+                    let mut pos = 0;
+                    while pos < slot_samples {
+                        let n = CHUNK.min(slot_samples - pos);
+                        source.next_samples(&mut slot[pos..pos + n]);
+                        pos += n;
+                    }
+                    let fade = ((0.005 * sample_rate as f32) as usize).min(slot_samples);
+                    let fade_start = slot_samples - fade;
+                    for (i, s) in slot[fade_start..].iter_mut().enumerate() {
+                        *s *= 1.0 - (i as f64 / fade as f64);
+                    }
+                    all_samples.extend_from_slice(&slot);
+                }
+            }
+        }
+    }
+
+    Ok(all_samples)
 }
 
 /// Render a sequence of notes from a named patch to a sample buffer.

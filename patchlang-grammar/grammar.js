@@ -16,6 +16,7 @@ module.exports = grammar({
     declaration: $ => choice(
       $.patch_decl,
       $.effect_decl,
+      $.phrase_decl,
     ),
 
     patch_decl: $ => seq(
@@ -26,6 +27,40 @@ module.exports = grammar({
       repeat($.patch_stmt),
       '}',
     ),
+
+    phrase_decl: $ => seq(
+      field('name', $.identifier),
+      '=',
+      $.phrase_call,
+      '|',
+      field('patch', $.identifier),
+    ),
+
+    phrase_call: $ => seq(
+      'phrase',
+      '{',
+      optional($.phrase_param_list),
+      $.note_list,
+      '}',
+    ),
+
+    phrase_param_list: $ => seq(
+      $.named_param,
+      repeat(seq(',', $.named_param)),
+      optional(','),
+    ),
+
+    note_list: $ => seq('[', repeat($.note_token), ']'),
+
+    note_token: $ => choice(
+      $.note,
+      $.rest,
+    ),
+
+    // letter + optional accidental + optional octave digit
+    note: $ => token(prec(-1, /[a-g]([#b][0-8]?|[0-8])?/)),
+
+    rest: $ => token(prec(-1, '_')),
 
     effect_decl: $ => seq(
       field('name', $.identifier),

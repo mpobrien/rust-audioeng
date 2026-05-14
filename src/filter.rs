@@ -51,6 +51,8 @@ impl SampleSource for ModulatedFilterSource {
 pub enum CompiledParam {
     Const(f64),
     Signal { source: Box<dyn SampleSource>, scale: f64, offset: f64 },
+    /// output = source * depth * scale + offset
+    ModSignal { source: Box<dyn SampleSource>, depth: Box<dyn SampleSource>, scale: f64, offset: f64 },
 }
 
 impl CompiledParam {
@@ -61,6 +63,13 @@ impl CompiledParam {
                 let mut buf = [0.0f64; 1];
                 source.next_samples(&mut buf);
                 buf[0] * *scale + *offset
+            }
+            CompiledParam::ModSignal { source, depth, scale, offset } => {
+                let mut buf = [0.0f64; 1];
+                let mut dep = [0.0f64; 1];
+                source.next_samples(&mut buf);
+                depth.next_samples(&mut dep);
+                buf[0] * dep[0] * *scale + *offset
             }
         }
     }

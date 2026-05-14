@@ -64,8 +64,24 @@ fn load_samples(
         .map_err(|e| format!("could not read file: {e}"))?;
     let env = lang::parse(&src)?;
 
+    // Phrases take priority: they carry their own note sequence and instrument.
+    if !env.phrases.is_empty() || patch_name.map_or(false, |n| env.phrases.contains_key(n)) {
+        let name = match patch_name {
+            Some(n) => {
+                if !env.phrases.contains_key(n) {
+                    let avail = env.phrases.keys().cloned().collect::<Vec<_>>().join(", ");
+                    return Err(format!("phrase '{n}' not found (available: {avail})"));
+                }
+                n.to_string()
+            }
+            None => env.phrases.keys().next().unwrap().clone(),
+        };
+        let samples = lang::render_phrase(&env, &name, sample_rate)?;
+        return Ok((name, samples));
+    }
+
     if env.patches.is_empty() {
-        return Err(format!("no patches defined in '{path}'"));
+        return Err(format!("no patches or phrases defined in '{path}'"));
     }
 
     let name = match patch_name {
@@ -877,14 +893,14 @@ mod tests {
     }
 
     #[test]
-    fn test_lang_lfo_minmax() {
+    fn test_lang_osc_minmax() {
         use crate::lang::{parse, render_patch};
 
-        // Inline lfo with min/max: cutoff sweeps 200–2000 Hz at 0.5 Hz
+        // Inline osc modulator with min/max: cutoff sweeps 200–2000 Hz at 0.5 Hz
         let src = r#"
             wub = patch {
               osc { shape = saw, freq = freq }
-                | lpf { cutoff = lfo { rate = 0.5, min = 200, max = 2000 }, q = 1.2 }
+                | lpf { cutoff = osc { freq = 0.5, min = 200, max = 2000 }, q = 1.2 }
                 | adsr { attack = 0.02, decay = 0.1, sustain = 0.8, release = 0.2 }
             }
         "#;
@@ -892,21 +908,21 @@ mod tests {
         let env = parse(src).unwrap();
         let notes: &[(f64, f32, f32)] = &[(220.0, 0.8, 0.8), (330.0, 0.8, 0.8)];
         let samples = render_patch(&env, "wub", notes, SAMPLE_RATE).unwrap();
-        crate::snap::assert_snapshot("lang_lfo_minmax", &samples);
+        crate::snap::assert_snapshot("lang_osc_minmax", &samples);
 
-        let file = File::create("lang_lfo_minmax.wav").unwrap();
+        let file = File::create("lang_osc_minmax.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
     }
 
     #[test]
-    fn test_lang_lfo_scale_offset() {
+    fn test_lang_osc_scale_offset() {
         use crate::lang::{parse, render_patch};
 
-        // Inline lfo with scale/offset: same sweep as above, different syntax
+        // Inline osc modulator with scale/offset: same sweep as above, different syntax
         let src = r#"
             wub = patch {
               osc { shape = saw, freq = freq }
-                | lpf { cutoff = lfo { rate = 0.5, scale = 900, offset = 1100 }, q = 1.2 }
+                | lpf { cutoff = osc { freq = 0.5, scale = 900, offset = 1100 }, q = 1.2 }
                 | adsr { attack = 0.02, decay = 0.1, sustain = 0.8, release = 0.2 }
             }
         "#;
@@ -914,20 +930,20 @@ mod tests {
         let env = parse(src).unwrap();
         let notes: &[(f64, f32, f32)] = &[(220.0, 0.8, 0.8), (330.0, 0.8, 0.8)];
         let samples = render_patch(&env, "wub", notes, SAMPLE_RATE).unwrap();
-        crate::snap::assert_snapshot("lang_lfo_scale_offset", &samples);
+        crate::snap::assert_snapshot("lang_osc_scale_offset", &samples);
 
-        let file = File::create("lang_lfo_scale_offset.wav").unwrap();
+        let file = File::create("lang_osc_scale_offset.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
     }
 
     #[test]
-    fn test_lang_lfo_named_binding() {
+    fn test_lang_osc_named_binding() {
         use crate::lang::{parse, render_patch};
 
-        // Named binding for lfo, then referenced by name in lpf cutoff param
+        // Named osc binding used as modulator via reference in lpf cutoff param
         let src = r#"
             wub = patch {
-              sweep = lfo { rate = 0.8, min = 300, max = 1800 }
+              sweep = osc { freq = 0.8, min = 300, max = 1800 }
               osc { shape = saw, freq = freq }
                 | lpf { cutoff = sweep, q = 1.0 }
                 | adsr { attack = 0.02, decay = 0.1, sustain = 0.8, release = 0.2 }
@@ -937,21 +953,128 @@ mod tests {
         let env = parse(src).unwrap();
         let notes: &[(f64, f32, f32)] = &[(220.0, 0.8, 0.8), (330.0, 0.8, 0.8)];
         let samples = render_patch(&env, "wub", notes, SAMPLE_RATE).unwrap();
-        crate::snap::assert_snapshot("lang_lfo_named", &samples);
+        crate::snap::assert_snapshot("lang_osc_named", &samples);
 
-        let file = File::create("lang_lfo_named.wav").unwrap();
+        let file = File::create("lang_osc_named.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
     }
 
     #[test]
-    fn test_lang_lfo_mixed_params_error() {
+    fn test_lang_phrase() {
+        use crate::lang::{parse, render_phrase};
+
+        let src = r#"
+            bass = patch {
+              voices = mono
+              osc { shape = saw, freq = freq }
+                | lpf  { cutoff = 800, q = 1.2 }
+                | adsr { attack = 0.02, decay = 0.08, sustain = 0.6, release = 0.12 }
+            }
+
+            melody = phrase { dur=eighth, tempo=120, [c d e f g a b c5 _ b a g f e d c] } | bass
+        "#;
+
+        let env = parse(src).unwrap();
+        assert!(env.phrases.contains_key("melody"));
+
+        let samples = render_phrase(&env, "melody", SAMPLE_RATE).unwrap();
+        assert!(!samples.is_empty());
+        crate::snap::assert_snapshot("lang_phrase", &samples);
+
+        let file = File::create("lang_phrase.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_phrase_rests_and_octaves() {
+        use crate::lang::{parse, render_phrase};
+
+        let src = r#"
+            lead = patch {
+              osc { shape = sine, freq = freq }
+                | adsr { attack = 0.01, decay = 0.05, sustain = 0.7, release = 0.08 }
+            }
+
+            # C major arpeggio with rests, spanning two octaves
+            arp = phrase { dur=sixteenth, tempo=160, [c4 e4 g4 c5 _ g4 e4 c4] } | lead
+        "#;
+
+        let env = parse(src).unwrap();
+        let samples = render_phrase(&env, "arp", SAMPLE_RATE).unwrap();
+        assert!(!samples.is_empty());
+        crate::snap::assert_snapshot("lang_phrase_arp", &samples);
+
+        let file = File::create("lang_phrase_arp.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_phrase_with_osc_mod() {
+        use crate::lang::{parse, render_phrase};
+
+        let src = r#"
+            wub = patch {
+              voices = mono
+              osc { shape = saw, freq = freq }
+                | lpf { cutoff = osc { freq = 2, min = 300, max = 1800 }, q = 1.5 }
+                | adsr { attack = 0.02, decay = 0.1, sustain = 0.7, release = 0.15 }
+            }
+
+            seq = phrase { dur=quarter, tempo=100, [c2 _ eb2 _ f2 g2] } | wub
+        "#;
+
+        let env = parse(src).unwrap();
+        let samples = render_phrase(&env, "seq", SAMPLE_RATE).unwrap();
+        assert!(!samples.is_empty());
+        crate::snap::assert_snapshot("lang_phrase_osc", &samples);
+
+        let file = File::create("lang_phrase_osc.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_phrase_unknown_note_value_error() {
+        use crate::lang::parse;
+
+        // 'crotchet' is not a valid note value name
+        let src = r#"
+            p = patch { osc { shape = sine, freq = freq } | adsr { attack = 0.01, decay = 0.1, sustain = 0.7, release = 0.1 } }
+            m = phrase { dur=crotchet, [c d e] } | p
+        "#;
+
+        // parse succeeds (dur=crotchet is valid identifier, checked at build time)
+        let env = parse(src).unwrap();
+        let result = crate::lang::render_phrase(&env, "m", SAMPLE_RATE);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lang_phrase_note_values() {
+        use crate::lang::{parse, render_phrase};
+
+        let src = r#"
+            p = patch {
+              osc { shape = sine, freq = freq }
+                | adsr { attack = 0.01, decay = 0.05, sustain = 0.8, release = 0.05 }
+            }
+
+            demo = phrase { dur=quarter, tempo=120, [c d e f g a b c5] } | p
+        "#;
+
+        let env = parse(src).unwrap();
+        let samples = render_phrase(&env, "demo", SAMPLE_RATE).unwrap();
+        assert!(!samples.is_empty());
+    }
+
+    #[test]
+    fn test_lang_phrase_mixed_params_error() {
         use crate::lang::parse;
 
         // Mixing min/max with scale/offset should be a build-time error
         let src = r#"
             bad = patch {
               osc { shape = saw, freq = freq }
-                | lpf { cutoff = lfo { rate = 1.0, min = 200, max = 2000, scale = 900 }, q = 1.0 }
+                | lpf { cutoff = osc { freq = 1.0, min = 200, max = 2000, scale = 900 }, q = 1.0 }
                 | adsr { attack = 0.01, decay = 0.1, sustain = 0.8, release = 0.1 }
             }
         "#;
@@ -962,6 +1085,61 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err();
         assert!(msg.contains("cannot mix min/max and scale/offset"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn test_lang_fm_depth_osc() {
+        use crate::lang::{parse, render_phrase};
+
+        let src = r#"
+            pulse = patch {
+              osc {
+                shape  = sine,
+                freq   = osc {
+                  freq   = freq * 1.4,
+                  scale  = 300,
+                  depth  = osc { freq = 2 },
+                  offset = freq
+                }
+              }
+                | adsr { attack = 0.01, decay = 0.1, sustain = 0.8, release = 0.3 }
+            }
+
+            melody = phrase { dur=half, tempo=60, [c4 _ e4 _ g4] } | pulse
+        "#;
+
+        let env = parse(src).unwrap();
+        let samples = render_phrase(&env, "melody", SAMPLE_RATE).unwrap();
+        assert!(!samples.is_empty());
+        crate::snap::assert_snapshot("lang_fm_depth_osc", &samples);
+
+        let file = File::create("lang_fm_depth_osc.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_fm_bell() {
+        use crate::lang::{parse, render_phrase};
+
+        let src = r#"
+            bell = patch {
+              osc {
+                shape = sine,
+                freq  = osc { freq = freq * 2, scale = 300, offset = freq }
+              }
+                | adsr { attack = 0.002, decay = 1.5, sustain = 0.0, release = 0.1 }
+            }
+
+            chime = phrase { dur=quarter, tempo=90, [c5 e5 g5 c6 _ g5 e5 c5] } | bell
+        "#;
+
+        let env = parse(src).unwrap();
+        let samples = render_phrase(&env, "chime", SAMPLE_RATE).unwrap();
+        assert!(!samples.is_empty());
+        crate::snap::assert_snapshot("lang_fm_bell", &samples);
+
+        let file = File::create("lang_fm_bell.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
     }
 
     #[test]

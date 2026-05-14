@@ -20,6 +20,7 @@ pub struct AdsrEnvelope {
     sample_rate: u32,
     phase: Phase,
     amplitude: f32,
+    release_start: f32,
 }
 
 impl AdsrEnvelope {
@@ -29,10 +30,12 @@ impl AdsrEnvelope {
             sample_rate,
             phase: Phase::Attack,
             amplitude: 0.0,
+            release_start: 0.0,
         }
     }
 
     pub fn note_off(&mut self) {
+        self.release_start = self.amplitude;
         self.phase = Phase::Release;
     }
 
@@ -72,9 +75,11 @@ impl AdsrEnvelope {
             }
             Phase::Sustain => {}
             Phase::Release => {
-                self.amplitude -=
-                    self.amplitude / (self.params.release_secs * self.sample_rate as f32);
-                if self.amplitude < 1e-4 {
+                // Linear ramp: takes exactly release_secs to reach zero from release_start.
+                let step = self.release_start
+                    / (self.params.release_secs * self.sample_rate as f32).max(1.0);
+                self.amplitude = (self.amplitude - step).max(0.0);
+                if self.amplitude <= 0.0 {
                     self.amplitude = 0.0;
                     self.phase = Phase::Done;
                 }
