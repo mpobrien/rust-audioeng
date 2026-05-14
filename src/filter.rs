@@ -18,6 +18,54 @@ impl SampleSource for FilteredSource {
     }
 }
 
+pub struct ModulatedFilterSource {
+    source: Box<dyn SampleSource>,
+    filter: BiquadFilter,
+    cutoff: CompiledParam,
+    q: CompiledParam,
+}
+
+impl ModulatedFilterSource {
+    pub fn new(
+        source: Box<dyn SampleSource>,
+        filter: BiquadFilter,
+        cutoff: CompiledParam,
+        q: CompiledParam,
+    ) -> Self {
+        Self { source, filter, cutoff, q }
+    }
+}
+
+impl SampleSource for ModulatedFilterSource {
+    fn next_samples(&mut self, buf: &mut [f64]) {
+        self.source.next_samples(buf);
+        for sample in buf.iter_mut() {
+            let cutoff = self.cutoff.next_value();
+            let q = self.q.next_value();
+            self.filter.set_cutoff_q(cutoff, q);
+            *sample = self.filter.tick(*sample);
+        }
+    }
+}
+
+pub enum CompiledParam {
+    Const(f64),
+    Signal { source: Box<dyn SampleSource>, scale: f64, offset: f64 },
+}
+
+impl CompiledParam {
+    pub fn next_value(&mut self) -> f64 {
+        match self {
+            CompiledParam::Const(v) => *v,
+            CompiledParam::Signal { source, scale, offset } => {
+                let mut buf = [0.0f64; 1];
+                source.next_samples(&mut buf);
+                buf[0] * *scale + *offset
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum FilterType {
     LowPass,
@@ -35,8 +83,9 @@ struct Coeffs {
 }
 
 pub struct BiquadFilter {
+    filter_type: FilterType,
+    sample_rate: u32,
     coeffs: Coeffs,
-    // state for "transposed direct form II"
     s1: f64,
     s2: f64,
 }
@@ -44,10 +93,16 @@ pub struct BiquadFilter {
 impl BiquadFilter {
     pub fn new(filter_type: FilterType, cutoff_hz: f64, q: f64, sample_rate: u32) -> Self {
         Self {
+            filter_type,
+            sample_rate,
             coeffs: compute_coeffs(filter_type, cutoff_hz, q, sample_rate),
             s1: 0.0,
             s2: 0.0,
         }
+    }
+
+    pub fn set_cutoff_q(&mut self, cutoff_hz: f64, q: f64) {
+        self.coeffs = compute_coeffs(self.filter_type, cutoff_hz, q, self.sample_rate);
     }
 
     pub fn process(&mut self, buf: &mut [f64]) {
@@ -64,8 +119,6 @@ impl BiquadFilter {
     }
 }
 
-/// Use the algorithm from RBJ cookbook to convert cutoff/q/sample rate into
-/// biquad coefficients.
 fn compute_coeffs(filter_type: FilterType, cutoff_hz: f64, q: f64, sample_rate: u32) -> Coeffs {
     let w0 = 2.0 * std::f64::consts::PI * cutoff_hz / sample_rate as f64;
     let cos_w0 = w0.cos();
@@ -75,35 +128,35 @@ fn compute_coeffs(filter_type: FilterType, cutoff_hz: f64, q: f64, sample_rate: 
     let (b0, b1, b2, a0, a1, a2) = match filter_type {
         FilterType::LowPass => (
             (1.0 - cos_w0) / 2.0,
-            1.0 - cos_w0,
+             1.0 - cos_w0,
             (1.0 - cos_w0) / 2.0,
-            1.0 + alpha,
+             1.0 + alpha,
             -2.0 * cos_w0,
-            1.0 - alpha,
+             1.0 - alpha,
         ),
         FilterType::HighPass => (
             (1.0 + cos_w0) / 2.0,
             -(1.0 + cos_w0),
             (1.0 + cos_w0) / 2.0,
-            1.0 + alpha,
+             1.0 + alpha,
             -2.0 * cos_w0,
-            1.0 - alpha,
+             1.0 - alpha,
         ),
         FilterType::BandPass => (
-            sin_w0 / 2.0,
-            0.0,
+             sin_w0 / 2.0,
+             0.0,
             -sin_w0 / 2.0,
-            1.0 + alpha,
+             1.0 + alpha,
             -2.0 * cos_w0,
-            1.0 - alpha,
+             1.0 - alpha,
         ),
         FilterType::Notch => (
-            1.0,
+             1.0,
             -2.0 * cos_w0,
-            1.0,
-            1.0 + alpha,
+             1.0,
+             1.0 + alpha,
             -2.0 * cos_w0,
-            1.0 - alpha,
+             1.0 - alpha,
         ),
     };
 

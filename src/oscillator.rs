@@ -49,4 +49,5 @@ impl SampleSource for Oscillator {
 
 pub trait SampleSource {
     fn next_samples(&mut self, buf: &mut [f64]);
+    fn is_done(&self) -> bool { false }
 }
