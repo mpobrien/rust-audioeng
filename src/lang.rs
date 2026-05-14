@@ -661,11 +661,11 @@ impl<'a> BuildCtx<'a> {
 
         let has_min    = self.has_param(call, "min");
         let has_max    = self.has_param(call, "max");
-        let has_scale  = self.has_param(call, "scale");
-        let has_offset = self.has_param(call, "offset");
+        let has_deviation = self.has_param(call, "deviation");
+        let has_offset    = self.has_param(call, "offset");
 
-        if (has_min || has_max) && (has_scale || has_offset) {
-            return Err("osc: cannot mix min/max and scale/offset — use one set or the other".to_string());
+        if (has_min || has_max) && (has_deviation || has_offset) {
+            return Err("osc: cannot mix min/max and deviation/offset — use one set or the other".to_string());
         }
 
         let (scale, offset) = if has_min || has_max {
@@ -673,9 +673,9 @@ impl<'a> BuildCtx<'a> {
             let max = self.param_f64(call, "max")?.ok_or("osc min/max mode: 'max' is required")?;
             ((max - min) / 2.0, (min + max) / 2.0)
         } else {
-            let scale  = self.param_f64(call, "scale")?.unwrap_or(1.0);
-            let offset = self.param_f64(call, "offset")?.unwrap_or(0.0);
-            (scale, offset)
+            let deviation = self.param_f64(call, "deviation")?.unwrap_or(1.0);
+            let offset    = self.param_f64(call, "offset")?.unwrap_or(0.0);
+            (deviation, offset)
         };
 
         let depth_node = self.build_osc_depth(call)?;

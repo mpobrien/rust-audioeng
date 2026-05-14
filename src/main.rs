@@ -21,7 +21,7 @@ fn main() {
         .collect();
 
     if positional.is_empty() {
-        eprintln!("usage: audioengine [--watch] <patch-file> [patch-name]");
+        eprintln!("usage: phogbank [--watch] <patch-file> [patch-name]");
         std::process::exit(1);
     }
 
@@ -915,14 +915,14 @@ mod tests {
     }
 
     #[test]
-    fn test_lang_osc_scale_offset() {
+    fn test_lang_osc_deviation_offset() {
         use crate::lang::{parse, render_patch};
 
-        // Inline osc modulator with scale/offset: same sweep as above, different syntax
+        // Inline osc modulator with deviation/offset: same sweep as above, different syntax
         let src = r#"
             wub = patch {
               osc { shape = saw, freq = freq }
-                | lpf { cutoff = osc { freq = 0.5, scale = 900, offset = 1100 }, q = 1.2 }
+                | lpf { cutoff = osc { freq = 0.5, deviation = 900, offset = 1100 }, q = 1.2 }
                 | adsr { attack = 0.02, decay = 0.1, sustain = 0.8, release = 0.2 }
             }
         "#;
@@ -930,9 +930,9 @@ mod tests {
         let env = parse(src).unwrap();
         let notes: &[(f64, f32, f32)] = &[(220.0, 0.8, 0.8), (330.0, 0.8, 0.8)];
         let samples = render_patch(&env, "wub", notes, SAMPLE_RATE).unwrap();
-        crate::snap::assert_snapshot("lang_osc_scale_offset", &samples);
+        crate::snap::assert_snapshot("lang_osc_deviation_offset", &samples);
 
-        let file = File::create("lang_osc_scale_offset.wav").unwrap();
+        let file = File::create("lang_osc_deviation_offset.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
     }
 
@@ -995,7 +995,7 @@ mod tests {
                 | adsr { attack = 0.01, decay = 0.05, sustain = 0.7, release = 0.08 }
             }
 
-            # C major arpeggio with rests, spanning two octaves
+            // C major arpeggio with rests, spanning two octaves
             arp = phrase { dur=sixteenth, tempo=160, [c4 e4 g4 c5 _ g4 e4 c4] } | lead
         "#;
 
@@ -1074,7 +1074,7 @@ mod tests {
         let src = r#"
             bad = patch {
               osc { shape = saw, freq = freq }
-                | lpf { cutoff = osc { freq = 1.0, min = 200, max = 2000, scale = 900 }, q = 1.0 }
+                | lpf { cutoff = osc { freq = 1.0, min = 200, max = 2000, deviation = 900 }, q = 1.0 }
                 | adsr { attack = 0.01, decay = 0.1, sustain = 0.8, release = 0.1 }
             }
         "#;
@@ -1084,7 +1084,7 @@ mod tests {
         let result = crate::lang::render_patch(&env, "bad", notes, SAMPLE_RATE);
         assert!(result.is_err());
         let msg = result.unwrap_err();
-        assert!(msg.contains("cannot mix min/max and scale/offset"), "unexpected error: {msg}");
+        assert!(msg.contains("cannot mix min/max and deviation/offset"), "unexpected error: {msg}");
     }
 
     #[test]
@@ -1097,7 +1097,7 @@ mod tests {
                 shape  = sine,
                 freq   = osc {
                   freq   = freq * 1.4,
-                  scale  = 300,
+                  deviation = 300,
                   depth  = osc { freq = 2 },
                   offset = freq
                 }
@@ -1125,7 +1125,7 @@ mod tests {
             bell = patch {
               osc {
                 shape = sine,
-                freq  = osc { freq = freq * 2, scale = 300, offset = freq }
+                freq  = osc { freq = freq * 2, deviation = 300, offset = freq }
               }
                 | adsr { attack = 0.002, decay = 1.5, sustain = 0.0, release = 0.1 }
             }
