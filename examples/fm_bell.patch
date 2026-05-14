@@ -1,0 +1,25 @@
+# FM bell / chime
+#
+# Classic FM bell: carrier modulated by a second oscillator at a non-integer
+# frequency ratio. The key to the bell character is that the modulation depth
+# (the "index") decays quickly via its own ADSR, starting bright and
+# inharmonic then fading toward a pure tone — like a real struck bell.
+#
+# C:M ratio = 1:1.4  (produces inharmonic partials, characteristic of bells)
+# depth env:  fast decay, zero sustain (deep at strike, gone quickly)
+# carrier env: slow decay, zero sustain (the tone rings and fades)
+
+bell = patch {
+  osc {
+    shape  = sine,
+    freq   = osc {
+      freq   = freq * 9.4,
+      scale  = 400,
+      depth  = adsr { attack = 0.1, decay = 0.1, sustain = 1, release = 0.5 },
+      offset = freq
+    }
+  }
+    | adsr { attack = 0.2, decay = 0.5, sustain = 0.0, release = 0.1 }
+}
+
+chime = phrase { dur=quarter, tempo=80, [c5 e5 g5 c6 _ g5 e5 c5] } | bell
