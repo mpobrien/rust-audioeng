@@ -1,0 +1,6 @@
+bass = patch {
+  voices = mono
+  osc { shape = saw, freq = freq }
+    | lpf  { cutoff = 300, q = 1.5 }
+    | adsr { attack = 0.02, decay = 0.1, sustain = 0.7, release = 0.15 }
+}

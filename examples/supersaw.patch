@@ -1,0 +1,13 @@
+space = effect {
+  delay { time = 0.375, feedback = 0.45, mix = 0.35 }
+}
+
+supersaw = patch {
+  voices = poly 4
+  osc1 = osc { shape = saw, freq = freq }
+  osc2 = osc { shape = saw, freq = freq * 1.006 }
+  body = mix { osc1, osc2 }
+       | lpf { cutoff = 2000, q = 0.8 }
+       | adsr { attack = 0.05, decay = 0.1, sustain = 0.8, release = 0.4 }
+  out = body * velocity
+}

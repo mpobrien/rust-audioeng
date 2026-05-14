@@ -41,6 +41,12 @@ impl AudioOutput {
         let drain_ms = (RING_BUFFER_FRAMES as u64 * 1000) / self.sample_rate as u64;
         thread::sleep(Duration::from_millis(drain_ms + 50));
     }
+
+    /// Returns `true` once the render thread has finished (all samples written
+    /// to the ring buffer). The callback may still be draining the last frames.
+    pub fn is_done(&self) -> bool {
+        self.thread.as_ref().map_or(true, |h| h.is_finished())
+    }
 }
 
 impl Drop for AudioOutput {
@@ -70,6 +76,11 @@ pub fn play_samples(samples: Vec<f64>) -> AudioOutput {
 }
 
 // --- internals ---
+
+/// Returns the sample rate of the system's default output device.
+pub fn device_sample_rate() -> u32 {
+    open_default_device().1.sample_rate().0
+}
 
 fn open_default_device() -> (cpal::Device, SupportedStreamConfig) {
     let host = cpal::default_host();

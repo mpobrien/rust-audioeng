@@ -5,13 +5,127 @@ mod output;
 mod filter;
 mod gate;
 mod graph;
+mod lang;
 mod mixer;
 mod oscillator;
 mod voice;
 mod wav;
 
 fn main() {
-    println!("Hello, world!");
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+
+    let watch = raw.iter().any(|a| a == "--watch");
+    let positional: Vec<&str> = raw.iter()
+        .filter(|a| !a.starts_with("--"))
+        .map(|s| s.as_str())
+        .collect();
+
+    if positional.is_empty() {
+        eprintln!("usage: audioengine [--watch] <patch-file> [patch-name]");
+        std::process::exit(1);
+    }
+
+    let path = positional[0];
+    let patch_name: Option<String> = positional.get(1).map(|s| s.to_string());
+
+    let sample_rate = output::device_sample_rate();
+
+    if watch {
+        run_watch(path, patch_name.as_deref(), sample_rate);
+    } else {
+        match load_and_play(path, patch_name.as_deref(), sample_rate) {
+            Ok(audio) => audio.wait(),
+            Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+        }
+    }
+}
+
+// ── shared demo sequence ───────────────────────────────────────────────────────
+
+fn demo_notes(note_secs: f32) -> Vec<(f64, f32, f32)> {
+    // C major scale, two octaves up and back
+    [
+        261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25,
+        587.33, 659.26, 698.46, 783.99, 880.00,
+        783.99, 698.46, 659.26, 587.33, 523.25, 493.88, 440.00,
+        392.00, 349.23, 329.63, 293.66, 261.63,
+    ].iter().map(|&f| (f, 0.8f32, note_secs)).collect()
+}
+
+fn load_and_play(
+    path: &str,
+    patch_name: Option<&str>,
+    sample_rate: u32,
+) -> Result<output::AudioOutput, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let env = lang::parse(&src);
+
+    if env.patches.is_empty() {
+        return Err(format!("no patches defined in '{path}'"));
+    }
+
+    let name = match patch_name {
+        Some(n) => {
+            if !env.patches.contains_key(n) {
+                let avail = env.patches.keys().cloned().collect::<Vec<_>>().join(", ");
+                return Err(format!("patch '{n}' not found (available: {avail})"));
+            }
+            n.to_string()
+        }
+        None => env.patches.keys().next().unwrap().clone(),
+    };
+
+    println!("playing patch '{name}' at {sample_rate} Hz");
+    let notes = demo_notes(0.35);
+    let samples = lang::render_patch(&env, &name, &notes, sample_rate);
+    Ok(output::play_samples(samples))
+}
+
+// ── watch mode ────────────────────────────────────────────────────────────────
+
+fn run_watch(path: &str, patch_name: Option<&str>, sample_rate: u32) -> ! {
+    use std::time::Duration;
+
+    println!("watching '{path}' for changes (Ctrl-C to quit)");
+
+    let mut last_mtime = file_mtime(path);
+    let poll = Duration::from_millis(150);
+
+    loop {
+        let audio = match load_and_play(path, patch_name, sample_rate) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("error: {e}");
+                // Wait for the file to change before retrying
+                loop {
+                    std::thread::sleep(poll);
+                    let m = file_mtime(path);
+                    if m != last_mtime { last_mtime = m; break; }
+                }
+                continue;
+            }
+        };
+
+        // Poll until the file changes or playback ends naturally (then loop it)
+        loop {
+            std::thread::sleep(poll);
+            let m = file_mtime(path);
+            if m != last_mtime {
+                last_mtime = m;
+                drop(audio); // stops CPAL stream immediately
+                println!("─ file changed, reloading…");
+                break;
+            }
+            if audio.is_done() {
+                drop(audio);
+                break; // replay same file
+            }
+        }
+    }
+}
+
+fn file_mtime(path: &str) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(test)]
@@ -487,8 +601,107 @@ mod tests {
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &all_samples).unwrap();
     }
 
+    // ── patchlang tests ──
+
     #[test]
-    fn test_sine_lfo_filter_sweep() {
+    fn test_lang_bass_patch() {
+        use crate::lang::{parse, render_patch};
+
+        let src = r#"
+            bass = patch {
+              voices = mono
+              osc { shape = saw, freq = freq }
+                | lpf  { cutoff = 800, q = 1.5 }
+                | adsr { attack = 0.02, decay = 0.1, sustain = 0.7, release = 0.15 }
+            }
+        "#;
+
+        let env = parse(src);
+
+        // C major scale, each note 0.3 s
+        let scale: &[(f64, f32, f32)] = &[
+            (261.63, 0.8, 0.3),
+            (293.66, 0.8, 0.3),
+            (329.63, 0.8, 0.3),
+            (349.23, 0.8, 0.3),
+            (392.00, 0.8, 0.3),
+            (440.00, 0.8, 0.3),
+            (493.88, 0.8, 0.3),
+            (523.25, 0.8, 0.3),
+        ];
+
+        let samples = render_patch(&env, "bass", scale, SAMPLE_RATE);
+        assert!(!samples.is_empty());
+
+        let file = File::create("lang_bass.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_supersaw_patch() {
+        use crate::lang::{parse, render_patch};
+
+        let src = r#"
+            supersaw = patch {
+              voices = poly 4
+              osc1 = osc { shape = saw, freq = freq }
+              osc2 = osc { shape = saw, freq = freq * 1.006 }
+              body = mix { osc1, osc2 }
+                   | lpf { cutoff = 2000, q = 0.8 }
+                   | adsr { attack = 0.3, decay = 0.1, sustain = 0.8, release = 0.5 }
+              out = body * velocity
+            }
+        "#;
+
+        let env = parse(src);
+
+        // A minor chord (A, C, E)
+        let notes: &[(f64, f32, f32)] = &[
+            (440.00, 0.9, 1.0),
+            (523.25, 0.9, 1.0),
+            (659.25, 0.9, 1.0),
+        ];
+
+        let samples = render_patch(&env, "supersaw", notes, SAMPLE_RATE);
+        assert!(!samples.is_empty());
+
+        let file = File::create("lang_supersaw.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_effect_chain() {
+        use crate::lang::{parse, render_patch};
+
+        let src = r#"
+            space = effect {
+              delay { time = 0.375, feedback = 0.45, mix = 0.4 }
+            }
+
+            lead = patch {
+              osc { shape = sine, freq = freq }
+                | adsr { attack = 0.05, decay = 0.1, sustain = 0.8, release = 0.25 }
+                | space
+            }
+        "#;
+
+        let env = parse(src);
+
+        let notes: &[(f64, f32, f32)] = &[
+            (440.00, 0.8, 0.4),
+            (493.88, 0.8, 0.4),
+            (523.25, 0.8, 0.4),
+        ];
+
+        let samples = render_patch(&env, "lead", notes, SAMPLE_RATE);
+        assert!(!samples.is_empty());
+
+        let file = File::create("lang_lead_space.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_sine_lfo_filter_sweep() {
         let low_hz  = 200.0;
         let high_hz = 2000.0;
         let lfo_freq = 0.5; // Hz — one sweep per 2 seconds
