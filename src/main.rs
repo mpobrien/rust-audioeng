@@ -1,6 +1,7 @@
 mod amp;
 mod delay;
 mod envelope;
+mod output;
 mod filter;
 mod gate;
 mod graph;
@@ -208,6 +209,94 @@ mod tests {
 
         let file = File::create("voice.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    // --- Real-time output ---
+
+    #[test]
+    #[ignore = "requires audio hardware; run with: cargo test test_realtime_cmaj_scale -- --ignored"]
+    fn test_realtime_cmaj_scale() {
+        use crate::output::play_samples;
+
+        let scale: &[f64] = &[
+            261.63, 293.66, 329.63, 349.23,
+            392.00, 440.00, 493.88, 523.25,
+            493.88, 440.00, 392.00, 349.23,
+            329.63, 293.66, 261.63,
+        ];
+
+        let make_note_adsr = || Adsr {
+            attack_secs: 0.02,
+            decay_secs: 0.05,
+            sustain_level: 0.7,
+            release_secs: 0.03,
+        };
+        let gate_secs = make_note_adsr().attack_secs + make_note_adsr().decay_secs + 0.25;
+
+        let mut all_samples: Vec<f64> = Vec::new();
+
+        for &freq in scale {
+            let event = NoteEvent {
+                frequency: freq,
+                velocity: 1.0,
+                duration_secs: Some(gate_secs),
+            };
+            let node = NodeDef::Filter {
+                kind: FilterType::LowPass,
+                cutoff_hz: ParamDef::Signal {
+                    node: Box::new(NodeDef::Oscillator {
+                        shape: OscillatorShape::Sine,
+                        frequency: 1.0,
+                    }),
+                    scale: 1400.0,
+                    offset: 1600.0,
+                },
+                q: ParamDef::Const(1.2),
+                source: Box::new(NodeDef::Oscillator {
+                    shape: OscillatorShape::Sawtooth,
+                    frequency: freq,
+                }),
+            };
+
+            let mut voice = Voice::from_event(event, node, make_note_adsr(), SAMPLE_RATE);
+            const CHUNK: usize = 256;
+            while !voice.is_done() {
+                let mut chunk = vec![0.0f64; CHUNK];
+                voice.render(&mut chunk);
+                all_samples.extend_from_slice(&chunk);
+            }
+        }
+
+        play_samples(all_samples).wait();
+    }
+
+    #[test]
+    #[ignore = "requires audio hardware; run with: cargo test test_realtime -- --ignored"]
+    fn test_realtime() {
+        use crate::output::play;
+
+        let node = NodeDef::Envelope {
+            adsr: make_adsr(),
+            duration_secs: ATTACK_SECS + DECAY_SECS + SUSTAIN_HOLD_SECS,
+            source: Box::new(NodeDef::Filter {
+                kind: FilterType::LowPass,
+                cutoff_hz: ParamDef::Signal {
+                    node: Box::new(NodeDef::Oscillator {
+                        shape: OscillatorShape::Sine,
+                        frequency: 0.5,
+                    }),
+                    scale: 1000.0,
+                    offset: 1200.0,
+                },
+                q: ParamDef::Const(1.5),
+                source: Box::new(NodeDef::Oscillator {
+                    shape: OscillatorShape::Sawtooth,
+                    frequency: FREQUENCY,
+                }),
+            }),
+        };
+
+        play(node).wait();
     }
 
     // --- Delay-based effects ---
