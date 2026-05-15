@@ -1,6 +1,7 @@
 /// Parser and NodeDef builder for the patchlang text syntax.
 use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
 use tree_sitter::{Language, Node, Parser};
 
 use crate::envelope::Adsr;
@@ -8,12 +9,19 @@ use crate::filter::FilterType;
 use crate::graph::{NodeDef, ParamDef, compile};
 use crate::oscillator::OscillatorShape;
 
-// ── C binding ─────────────────────────────────────────────────────────────────
+// ── hand-rolled parser (wasm32 only) ─────────────────────────────────────────
+#[cfg(target_arch = "wasm32")]
+#[path = "lang_wasm.rs"]
+mod lang_wasm;
 
+// ── tree-sitter C binding (native only) ──────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" {
     fn tree_sitter_patchlang() -> *const tree_sitter::ffi::TSLanguage;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn patchlang_language() -> Language {
     unsafe { Language::from_raw(tree_sitter_patchlang()) }
 }
@@ -106,6 +114,7 @@ pub enum Expr {
     Number(f64),
     Ident(String),
     BinOp { left: Box<Expr>, op: BinOpKind, right: Box<Expr> },
+    Range { lo: f64, hi: f64 },
     Chain(Box<PipeChain>),
     Call(NodeCall),
 }
@@ -120,6 +129,7 @@ pub enum BinOpKind {
 
 // ── parse errors ──────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 fn collect_parse_errors(node: Node, src: &[u8], out: &mut Vec<String>) {
     if node.kind() == "ERROR" {
         let p = node.start_position();
@@ -149,6 +159,15 @@ fn collect_parse_errors(node: Node, src: &[u8], out: &mut Vec<String>) {
 /// Parse patchlang source.  Returns a descriptive error string (with line
 /// numbers) if the source has syntax errors or references unknown constructs.
 pub fn parse(src: &str) -> Result<PatchEnv, String> {
+    #[cfg(target_arch = "wasm32")]
+    return lang_wasm::parse(src);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    parse_with_tree_sitter(src)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_with_tree_sitter(src: &str) -> Result<PatchEnv, String> {
     let mut parser = Parser::new();
     parser
         .set_language(&patchlang_language())
@@ -193,6 +212,7 @@ pub fn parse(src: &str) -> Result<PatchEnv, String> {
     Ok(PatchEnv { patches, effects, phrases })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_patch_decl(node: Node, src: &[u8]) -> PatchDecl {
     let name = text(node.child_by_field_name("name").unwrap(), src);
     let mut voices = VoicesMode::Mono;
@@ -217,6 +237,7 @@ fn parse_patch_decl(node: Node, src: &[u8]) -> PatchDecl {
     PatchDecl { name, voices, stmts }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_effect_decl(node: Node, src: &[u8]) -> EffectDecl {
     let name = text(node.child_by_field_name("name").unwrap(), src);
     let mut cursor = node.walk();
@@ -228,6 +249,7 @@ fn parse_effect_decl(node: Node, src: &[u8]) -> EffectDecl {
     EffectDecl { name, chain }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_voices_stmt(node: Node, src: &[u8]) -> VoicesMode {
     let vv = node.named_child(0).expect("voices_stmt has no voices_value");
     let t = std::str::from_utf8(&src[vv.byte_range()]).unwrap().trim();
@@ -240,12 +262,14 @@ fn parse_voices_stmt(node: Node, src: &[u8]) -> VoicesMode {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_binding_stmt(node: Node, src: &[u8]) -> (String, Expr) {
     let name = text(node.child_by_field_name("name").unwrap(), src);
     let value = parse_expr(node.child_by_field_name("value").unwrap(), src);
     (name, value)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_pipe_chain(node: Node, src: &[u8]) -> PipeChain {
     let mut cursor = node.walk();
     let children: Vec<Node> = node.named_children(&mut cursor).collect();
@@ -258,6 +282,7 @@ fn parse_pipe_chain(node: Node, src: &[u8]) -> PipeChain {
     PipeChain { head, segments }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_pipe_segment(node: Node, src: &[u8]) -> PipeSegment {
     let child = node.named_child(0).expect("empty pipe_segment");
     match child.kind() {
@@ -267,6 +292,7 @@ fn parse_pipe_segment(node: Node, src: &[u8]) -> PipeSegment {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_node_call(node: Node, src: &[u8]) -> NodeCall {
     let kind = text(node.child_by_field_name("kind").unwrap(), src);
     let mut params = Vec::new();
@@ -279,6 +305,7 @@ fn parse_node_call(node: Node, src: &[u8]) -> NodeCall {
     NodeCall { kind, params }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_param_list(node: Node, src: &[u8]) -> Vec<ParamItem> {
     let mut cursor = node.walk();
     node.named_children(&mut cursor)
@@ -286,6 +313,7 @@ fn parse_param_list(node: Node, src: &[u8]) -> Vec<ParamItem> {
         .collect()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_param_item(node: Node, src: &[u8]) -> ParamItem {
     let child = node.named_child(0).expect("empty param_item");
     match child.kind() {
@@ -299,16 +327,23 @@ fn parse_param_item(node: Node, src: &[u8]) -> ParamItem {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_param_value(node: Node, src: &[u8]) -> Expr {
     let child = node.named_child(0).expect("empty param_value");
     match child.kind() {
-        "node_call"   => Expr::Call(parse_node_call(child, src)),
-        "binary_expr" => parse_binary_expr(child, src),
-        "primary"     => parse_primary(child, src),
+        "node_call"      => Expr::Call(parse_node_call(child, src)),
+        "range_literal"  => {
+            let lo: f64 = text(child.child_by_field_name("lo").unwrap(), src).parse().expect("bad range lo");
+            let hi: f64 = text(child.child_by_field_name("hi").unwrap(), src).parse().expect("bad range hi");
+            Expr::Range { lo, hi }
+        }
+        "binary_expr"    => parse_binary_expr(child, src),
+        "primary"        => parse_primary(child, src),
         k => panic!("unexpected param_value child '{k}'"),
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_expr(node: Node, src: &[u8]) -> Expr {
     let child = node.named_child(0).expect("empty expr");
     match child.kind() {
@@ -319,6 +354,7 @@ fn parse_expr(node: Node, src: &[u8]) -> Expr {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_binary_expr(node: Node, src: &[u8]) -> Expr {
     let left = parse_primary(node.child_by_field_name("left").unwrap(), src);
     let op_text = text(node.child_by_field_name("op").unwrap(), src);
@@ -333,6 +369,7 @@ fn parse_binary_expr(node: Node, src: &[u8]) -> Expr {
     Expr::BinOp { left: Box::new(left), op, right: Box::new(right) }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_primary(node: Node, src: &[u8]) -> Expr {
     let child = node.named_child(0).expect("empty primary");
     match child.kind() {
@@ -342,6 +379,7 @@ fn parse_primary(node: Node, src: &[u8]) -> Expr {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_phrase_decl(node: Node, src: &[u8]) -> PhraseDecl {
     let name       = text(node.child_by_field_name("name").unwrap(), src);
     let patch_name = text(node.child_by_field_name("patch").unwrap(), src);
@@ -352,6 +390,7 @@ fn parse_phrase_decl(node: Node, src: &[u8]) -> PhraseDecl {
     parse_phrase_call(phrase_call, src, name, patch_name)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_phrase_call(node: Node, src: &[u8], name: String, patch_name: String) -> PhraseDecl {
     let mut tempo       = 120.0f64;
     let mut default_dur = "quarter".to_string();
@@ -394,6 +433,7 @@ fn parse_phrase_call(node: Node, src: &[u8], name: String, patch_name: String) -
     PhraseDecl { name, tempo, default_dur, notes, patch_name }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_note_item(s: &str) -> NoteItem {
     let mut chars = s.chars().peekable();
     let name = match chars.next().unwrap_or('c') {
@@ -460,6 +500,7 @@ fn note_value_secs(val: &NoteValue, tempo: f64) -> f32 {
     (quarter * beats) as f32
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn text(node: Node, src: &[u8]) -> String {
     std::str::from_utf8(&src[node.byte_range()])
         .expect("non-utf8 source")
@@ -565,12 +606,16 @@ impl<'a> BuildCtx<'a> {
     fn build_node_call(&self, call: &NodeCall, source: Option<NodeDef>) -> BuildResult {
         match call.kind.as_str() {
             "osc" => {
-                let shape = self.param_shape(call, "shape").unwrap_or(OscillatorShape::Sine);
-                let freq  = self.param_def(call, "freq", self.freq)?;
-                Ok(match freq {
-                    ParamDef::Const(f) => NodeDef::Oscillator { shape, frequency: f },
-                    freq               => NodeDef::FmOscillator { shape, frequency: freq },
-                })
+                let shape    = self.param_shape(call, "shape").unwrap_or(OscillatorShape::Sine);
+                let freq     = self.param_def(call, "freq", self.freq)?;
+                let feedback = self.param_f64(call, "feedback")?.unwrap_or(0.0);
+                let needs_pm = !matches!(freq, ParamDef::Const(_)) || feedback != 0.0;
+                if needs_pm {
+                    Ok(NodeDef::PmOscillator { shape, frequency: freq, feedback })
+                } else {
+                    let f = match freq { ParamDef::Const(f) => f, _ => unreachable!() };
+                    Ok(NodeDef::Oscillator { shape, frequency: f })
+                }
             }
             "lpf"   => self.build_filter(call, FilterType::LowPass,  source),
             "hpf"   => self.build_filter(call, FilterType::HighPass, source),
@@ -659,23 +704,27 @@ impl<'a> BuildCtx<'a> {
         let shape = self.param_shape(call, "shape").unwrap_or(OscillatorShape::Sine);
         let freq  = self.param_f64(call, "freq")?.unwrap_or(1.0);
 
+        let has_range  = self.has_param(call, "range");
         let has_min    = self.has_param(call, "min");
         let has_max    = self.has_param(call, "max");
-        let has_deviation = self.has_param(call, "deviation");
-        let has_offset    = self.has_param(call, "offset");
+        let has_level  = self.has_param(call, "level");
+        let has_offset = self.has_param(call, "offset");
 
-        if (has_min || has_max) && (has_deviation || has_offset) {
-            return Err("osc: cannot mix min/max and deviation/offset — use one set or the other".to_string());
+        if (has_min || has_max || has_range) && (has_level || has_offset) {
+            return Err("osc: cannot mix min/max/range and level/offset — use one set or the other".to_string());
         }
 
-        let (scale, offset) = if has_min || has_max {
+        let (scale, offset) = if has_range {
+            let (lo, hi) = self.param_range(call, "range")?;
+            ((hi - lo) / 2.0, (lo + hi) / 2.0)
+        } else if has_min || has_max {
             let min = self.param_f64(call, "min")?.ok_or("osc min/max mode: 'min' is required")?;
             let max = self.param_f64(call, "max")?.ok_or("osc min/max mode: 'max' is required")?;
             ((max - min) / 2.0, (min + max) / 2.0)
         } else {
-            let deviation = self.param_f64(call, "deviation")?.unwrap_or(1.0);
-            let offset    = self.param_f64(call, "offset")?.unwrap_or(0.0);
-            (deviation, offset)
+            let level  = self.param_f64(call, "level")?.unwrap_or(1.0);
+            let offset = self.param_f64(call, "offset")?.unwrap_or(0.0);
+            (level, offset)
         };
 
         let depth_node = self.build_osc_depth(call)?;
@@ -763,6 +812,18 @@ impl<'a> BuildCtx<'a> {
             }
             _ => None,
         }).transpose()
+    }
+
+    fn param_range(&self, call: &NodeCall, key: &str) -> Result<(f64, f64), String> {
+        call.params.iter().find_map(|p| match p {
+            ParamItem::Named { key: k, value: Expr::Range { lo, hi } } if k == key => {
+                Some(Ok((*lo, *hi)))
+            }
+            ParamItem::Named { key: k, .. } if k == key => {
+                Some(Err(format!("'{key}' must be a range literal (e.g. 200..2000)")))
+            }
+            _ => None,
+        }).unwrap_or(Err(format!("'{key}' param not found")))
     }
 
     fn param_shape(&self, call: &NodeCall, key: &str) -> Option<OscillatorShape> {

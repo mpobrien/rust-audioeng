@@ -277,6 +277,10 @@
         {
           "type": "primary",
           "named": true
+        },
+        {
+          "type": "range_literal",
+          "named": true
         }
       ]
     }
@@ -458,6 +462,32 @@
     }
   },
   {
+    "type": "range_literal",
+    "named": true,
+    "fields": {
+      "hi": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "number",
+            "named": true
+          }
+        ]
+      },
+      "lo": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "number",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "source_file",
     "named": true,
     "root": true,
@@ -517,6 +547,10 @@
   },
   {
     "type": "-",
+    "named": false
+  },
+  {
+    "type": "..",
     "named": false
   },
   {

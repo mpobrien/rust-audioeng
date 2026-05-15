@@ -1,14 +1,14 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-// Relative base paths so the build works under any GitHub Pages path
-// (USER.github.io, USER.github.io/REPO, or a custom domain).
-// If you prefer absolute paths, set this to '/your-repo-name/'.
+import wasm from 'vite-plugin-wasm';
+import topLevelAwait from 'vite-plugin-top-level-await';
 export default defineConfig({
-    plugins: [react()],
+    plugins: [react(), wasm(), topLevelAwait()],
     base: './',
     build: {
         outDir: 'dist',
         sourcemap: false,
         assetsInlineLimit: 4096,
+        target: 'es2022',
     },
 });

@@ -47,7 +47,7 @@ export default function App() {
           <span className="brand-mark" />
           phogbank
         </a>
-        <span className="version">v0.7.2</span>
+        <span className="version">v0.1.0</span>
         <span className="spacer" />
         <ThemeSwitcher />
         <a href="#examples">examples</a>
@@ -69,7 +69,7 @@ export default function App() {
           <p className="tagline">
             <strong>Build synths, patterns, sequences, or entire tracks with code.</strong>
           </p>
-          <p className="hero-meta">v0.7.2 · macOS / linux / windows · MIT</p>
+          <p className="hero-meta">v0.0.1 · macOS / linux / windows · MIT</p>
           <div className="cta-row">
             <a href="#install" className="btn">
               install <span className="arrow">→</span>

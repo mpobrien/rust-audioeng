@@ -1,10 +1,11 @@
-// FM with oscillating depth
+// PM with oscillating depth
 //
 // A slow oscillator (2 Hz) drives the modulation depth instead of an envelope.
-// At depth = +1: carrier swings ±300 Hz, rich with FM sidebands.
+// `level = 3` means the peak phase deviation is ±3 cycles when depth = 1.
+// At depth = +1: rich PM sidebands.
 // At depth =  0: modulation vanishes, pure sine.
-// At depth = -1: modulation inverts (equivalent to phase-shifting the modulator
-//                by π), same spectral richness but different phase relationship.
+// At depth = -1: modulation inverts phase (equivalent spectral richness,
+//                different phase relationship).
 //
 // The result is a rhythmic timbral pulse — the sound brightens and darkens
 // twice per second as the depth oscillator cycles.
@@ -13,14 +14,14 @@ pulse = patch {
   osc {
     shape  = sine,
     freq   = osc {
-      shape = square,
+      shape  = sine,
       freq   = freq * 1.4,
-      deviation = 300,
+      level  = 2,
       depth  = osc { freq = 2 },
       offset = freq
     }
   }
-  | hpf { cutoff = 1600 }
+  | hpf { cutoff = 1100 }
   | delay { time = 0.8, feedback = 0.1 }
     | adsr { attack = 0.01, decay = 4.2, sustain = 0, release = 0.1 }
 }

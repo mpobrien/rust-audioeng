@@ -514,6 +514,7 @@ dependencies = [
  "cpal",
  "ringbuf",
  "tree-sitter",
+ "wasm-bindgen",
 ]
 
 [[package]]

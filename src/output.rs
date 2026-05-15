@@ -9,8 +9,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
 use ringbuf::HeapRb;
 
-use crate::graph::{NodeDef, compile};
-use crate::oscillator::SampleSource;
+use phogbank::graph::{NodeDef, compile};
+use phogbank::oscillator::SampleSource;
 
 /// Frames held in the ring buffer between the render thread and audio callback.
 /// ~185ms at 44100 Hz — enough headroom to absorb scheduling jitter without

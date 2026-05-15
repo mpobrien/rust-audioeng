@@ -35,8 +35,9 @@ highlight default link patchlangNumber Number
 syntax match patchlangPipe '\s*|\s*'
 highlight default link patchlangPipe Operator
 
-" ── arithmetic operators ──────────────────────────────────────────────────
+" ── arithmetic operators and range ───────────────────────────────────────────
 syntax match patchlangOp '[+\-*/]'
+syntax match patchlangOp '\.\.'
 highlight default link patchlangOp Operator
 
 " ── brackets and delimiters ───────────────────────────────────────────────

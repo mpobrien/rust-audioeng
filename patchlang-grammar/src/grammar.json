@@ -523,11 +523,40 @@
         },
         {
           "type": "SYMBOL",
+          "name": "range_literal"
+        },
+        {
+          "type": "SYMBOL",
           "name": "binary_expr"
         },
         {
           "type": "SYMBOL",
           "name": "primary"
+        }
+      ]
+    },
+    "range_literal": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "lo",
+          "content": {
+            "type": "SYMBOL",
+            "name": "number"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ".."
+        },
+        {
+          "type": "FIELD",
+          "name": "hi",
+          "content": {
+            "type": "SYMBOL",
+            "name": "number"
+          }
         }
       ]
     },

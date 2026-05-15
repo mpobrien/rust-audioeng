@@ -80,6 +80,13 @@ export function pbTokens(line: string): Token[] {
       continue;
     }
 
+    // two-char operators
+    if (c === '.' && line[i + 1] === '.') {
+      out.push({ t: 'op', v: '..' });
+      i += 2;
+      continue;
+    }
+
     // punctuation vs operators
     if (/[{}()[\],]/.test(c)) out.push({ t: 'punct', v: c });
     else if (/[|*+\-/]/.test(c)) out.push({ t: 'op', v: c });

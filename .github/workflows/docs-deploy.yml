@@ -3,7 +3,13 @@ name: Deploy docs to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: [docs/**]
+    paths:
+      - docs/**
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+      - patchlang-grammar/**
   workflow_dispatch:
 
 permissions:
@@ -18,11 +24,14 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: docs
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - uses: actions/setup-node@v4
         with:
@@ -30,9 +39,16 @@ jobs:
           cache: npm
           cache-dependency-path: docs/package-lock.json
 
-      - run: npm ci
+      - name: Install npm deps
+        run: npm ci
+        working-directory: docs
 
-      - run: npm run build
+      - name: Build wasm
+        run: wasm-pack build --target web --out-dir docs/src/pkg
+
+      - name: Build site
+        run: npm run build
+        working-directory: docs
 
       - uses: actions/configure-pages@v5
 

@@ -146,9 +146,16 @@ module.exports = grammar({
 
     // param values allow arithmetic and bare identifiers
     param_value: $ => choice(
-      $.node_call,    // inline modulator: lfo { rate = 0.5, min = 200, max = 2000 }
+      $.node_call,       // inline modulator: osc { freq = 0.5, range = 200..2000 }
+      $.range_literal,   // lo..hi shorthand
       $.binary_expr,
       $.primary,
+    ),
+
+    range_literal: $ => seq(
+      field('lo', $.number),
+      '..',
+      field('hi', $.number),
     ),
 
     binary_expr: $ => prec.left(1, seq(

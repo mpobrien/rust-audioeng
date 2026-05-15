@@ -1,15 +1,8 @@
-mod amp;
-mod delay;
-mod envelope;
+// Binary-only modules (use cpal/ringbuf; excluded from the wasm lib target).
 mod output;
-mod filter;
-mod gate;
-mod graph;
-mod lang;
-mod mixer;
-mod oscillator;
-mod voice;
 mod wav;
+
+use phogbank::lang;
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -322,12 +315,12 @@ mod snap {
 
 #[cfg(test)]
 mod tests {
-    use crate::envelope::{Adsr, AdsrEnvelope};
-    use crate::filter::{BiquadFilter, FilterType};
-    use crate::graph::{NodeDef, ParamDef, compile};
-    use crate::voice::{Voice, NoteEvent};
-    use crate::mixer::MixedSource;
-    use crate::oscillator::{Oscillator, OscillatorShape, SampleSource};
+    use phogbank::envelope::{Adsr, AdsrEnvelope};
+    use phogbank::filter::{BiquadFilter, FilterType};
+    use phogbank::graph::{NodeDef, ParamDef, compile};
+    use phogbank::voice::{Voice, NoteEvent};
+    use phogbank::mixer::MixedSource;
+    use phogbank::oscillator::{Oscillator, OscillatorShape, SampleSource};
     use crate::wav::write_wav;
     use std::fs::File;
     use std::io::BufWriter;
@@ -797,7 +790,7 @@ mod tests {
 
     #[test]
     fn test_lang_bass_patch() {
-        use crate::lang::{parse, render_patch};
+        use phogbank::lang::{parse, render_patch};
 
         let src = r#"
             bass = patch {
@@ -831,7 +824,7 @@ mod tests {
 
     #[test]
     fn test_lang_supersaw_patch() {
-        use crate::lang::{parse, render_patch};
+        use phogbank::lang::{parse, render_patch};
 
         let src = r#"
             supersaw = patch {
@@ -863,7 +856,7 @@ mod tests {
 
     #[test]
     fn test_lang_effect_chain() {
-        use crate::lang::{parse, render_patch};
+        use phogbank::lang::{parse, render_patch};
 
         let src = r#"
             space = effect {
@@ -894,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_lang_osc_minmax() {
-        use crate::lang::{parse, render_patch};
+        use phogbank::lang::{parse, render_patch};
 
         // Inline osc modulator with min/max: cutoff sweeps 200–2000 Hz at 0.5 Hz
         let src = r#"
@@ -915,14 +908,14 @@ mod tests {
     }
 
     #[test]
-    fn test_lang_osc_deviation_offset() {
-        use crate::lang::{parse, render_patch};
+    fn test_lang_osc_range_literal() {
+        use phogbank::lang::{parse, render_patch};
 
-        // Inline osc modulator with deviation/offset: same sweep as above, different syntax
+        // range = lo..hi is equivalent to min = lo, max = hi
         let src = r#"
             wub = patch {
               osc { shape = saw, freq = freq }
-                | lpf { cutoff = osc { freq = 0.5, deviation = 900, offset = 1100 }, q = 1.2 }
+                | lpf { cutoff = osc { freq = 0.5, range = 200..2000 }, q = 1.2 }
                 | adsr { attack = 0.02, decay = 0.1, sustain = 0.8, release = 0.2 }
             }
         "#;
@@ -930,15 +923,35 @@ mod tests {
         let env = parse(src).unwrap();
         let notes: &[(f64, f32, f32)] = &[(220.0, 0.8, 0.8), (330.0, 0.8, 0.8)];
         let samples = render_patch(&env, "wub", notes, SAMPLE_RATE).unwrap();
-        crate::snap::assert_snapshot("lang_osc_deviation_offset", &samples);
+        // should produce identical audio to the min/max form
+        crate::snap::assert_snapshot("lang_osc_minmax", &samples);
+    }
 
-        let file = File::create("lang_osc_deviation_offset.wav").unwrap();
+    #[test]
+    fn test_lang_osc_index_offset() {
+        use phogbank::lang::{parse, render_patch};
+
+        // Inline osc modulator with level/offset: same sweep as above, different syntax
+        let src = r#"
+            wub = patch {
+              osc { shape = saw, freq = freq }
+                | lpf { cutoff = osc { freq = 0.5, level = 900, offset = 1100 }, q = 1.2 }
+                | adsr { attack = 0.02, decay = 0.1, sustain = 0.8, release = 0.2 }
+            }
+        "#;
+
+        let env = parse(src).unwrap();
+        let notes: &[(f64, f32, f32)] = &[(220.0, 0.8, 0.8), (330.0, 0.8, 0.8)];
+        let samples = render_patch(&env, "wub", notes, SAMPLE_RATE).unwrap();
+        crate::snap::assert_snapshot("lang_osc_index_offset", &samples);
+
+        let file = File::create("lang_osc_index_offset.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
     }
 
     #[test]
     fn test_lang_osc_named_binding() {
-        use crate::lang::{parse, render_patch};
+        use phogbank::lang::{parse, render_patch};
 
         // Named osc binding used as modulator via reference in lpf cutoff param
         let src = r#"
@@ -961,7 +974,7 @@ mod tests {
 
     #[test]
     fn test_lang_phrase() {
-        use crate::lang::{parse, render_phrase};
+        use phogbank::lang::{parse, render_phrase};
 
         let src = r#"
             bass = patch {
@@ -987,7 +1000,7 @@ mod tests {
 
     #[test]
     fn test_lang_phrase_rests_and_octaves() {
-        use crate::lang::{parse, render_phrase};
+        use phogbank::lang::{parse, render_phrase};
 
         let src = r#"
             lead = patch {
@@ -1010,7 +1023,7 @@ mod tests {
 
     #[test]
     fn test_lang_phrase_with_osc_mod() {
-        use crate::lang::{parse, render_phrase};
+        use phogbank::lang::{parse, render_phrase};
 
         let src = r#"
             wub = patch {
@@ -1034,7 +1047,7 @@ mod tests {
 
     #[test]
     fn test_lang_phrase_unknown_note_value_error() {
-        use crate::lang::parse;
+        use phogbank::lang::parse;
 
         // 'crotchet' is not a valid note value name
         let src = r#"
@@ -1044,13 +1057,13 @@ mod tests {
 
         // parse succeeds (dur=crotchet is valid identifier, checked at build time)
         let env = parse(src).unwrap();
-        let result = crate::lang::render_phrase(&env, "m", SAMPLE_RATE);
+        let result = phogbank::lang::render_phrase(&env, "m", SAMPLE_RATE);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_lang_phrase_note_values() {
-        use crate::lang::{parse, render_phrase};
+        use phogbank::lang::{parse, render_phrase};
 
         let src = r#"
             p = patch {
@@ -1068,28 +1081,28 @@ mod tests {
 
     #[test]
     fn test_lang_phrase_mixed_params_error() {
-        use crate::lang::parse;
+        use phogbank::lang::parse;
 
         // Mixing min/max with scale/offset should be a build-time error
         let src = r#"
             bad = patch {
               osc { shape = saw, freq = freq }
-                | lpf { cutoff = osc { freq = 1.0, min = 200, max = 2000, deviation = 900 }, q = 1.0 }
+                | lpf { cutoff = osc { freq = 1.0, min = 200, max = 2000, level = 900 }, q = 1.0 }
                 | adsr { attack = 0.01, decay = 0.1, sustain = 0.8, release = 0.1 }
             }
         "#;
 
         let env = parse(src).unwrap();
         let notes: &[(f64, f32, f32)] = &[(440.0, 0.8, 0.5)];
-        let result = crate::lang::render_patch(&env, "bad", notes, SAMPLE_RATE);
+        let result = phogbank::lang::render_patch(&env, "bad", notes, SAMPLE_RATE);
         assert!(result.is_err());
         let msg = result.unwrap_err();
-        assert!(msg.contains("cannot mix min/max and deviation/offset"), "unexpected error: {msg}");
+        assert!(msg.contains("cannot mix min/max/range and level/offset"), "unexpected error: {msg}");
     }
 
     #[test]
     fn test_lang_fm_depth_osc() {
-        use crate::lang::{parse, render_phrase};
+        use phogbank::lang::{parse, render_phrase};
 
         let src = r#"
             pulse = patch {
@@ -1097,7 +1110,7 @@ mod tests {
                 shape  = sine,
                 freq   = osc {
                   freq   = freq * 1.4,
-                  deviation = 300,
+                  level  = 3,
                   depth  = osc { freq = 2 },
                   offset = freq
                 }
@@ -1119,13 +1132,13 @@ mod tests {
 
     #[test]
     fn test_lang_fm_bell() {
-        use crate::lang::{parse, render_phrase};
+        use phogbank::lang::{parse, render_phrase};
 
         let src = r#"
             bell = patch {
               osc {
                 shape = sine,
-                freq  = osc { freq = freq * 2, deviation = 300, offset = freq }
+                freq  = osc { freq = freq * 2, level = 3, offset = freq }
               }
                 | adsr { attack = 0.002, decay = 1.5, sustain = 0.0, release = 0.1 }
             }
@@ -1139,6 +1152,30 @@ mod tests {
         crate::snap::assert_snapshot("lang_fm_bell", &samples);
 
         let file = File::create("lang_fm_bell.wav").unwrap();
+        write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
+    }
+
+    #[test]
+    fn test_lang_pm_feedback() {
+        use phogbank::lang::{parse, render_phrase};
+
+        // Self-feedback only (no external modulator) — distorts a pure sine into
+        // a progressively richer waveform as feedback approaches 1/π ≈ 0.318.
+        let src = r#"
+            dist = patch {
+              osc { shape = sine, feedback = 0.28 }
+                | adsr { attack = 0.005, decay = 0.8, sustain = 0.0, release = 0.05 }
+            }
+
+            melody = phrase { dur=quarter, tempo=120, [c4 e4 g4 c5] } | dist
+        "#;
+
+        let env = parse(src).unwrap();
+        let samples = render_phrase(&env, "melody", SAMPLE_RATE).unwrap();
+        assert!(!samples.is_empty());
+        crate::snap::assert_snapshot("lang_pm_feedback", &samples);
+
+        let file = File::create("lang_pm_feedback.wav").unwrap();
         write_wav(&mut BufWriter::new(file), 1, SAMPLE_RATE, &samples).unwrap();
     }
 

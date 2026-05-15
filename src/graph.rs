@@ -24,8 +24,10 @@ pub enum NodeDef {
     /// Periodic waveform generator with fixed frequency.
     Oscillator { shape: OscillatorShape, frequency: f64 },
 
-    /// Periodic waveform generator with signal-rate frequency modulation.
-    FmOscillator { shape: OscillatorShape, frequency: ParamDef },
+    /// Periodic waveform generator with phase modulation and optional self-feedback.
+    /// `frequency` encodes the carrier freq (offset) + modulator signal (node/depth/scale).
+    /// `feedback` feeds the previous output sample back into the phase accumulator.
+    PmOscillator { shape: OscillatorShape, frequency: ParamDef, feedback: f64 },
 
     /// Biquad filter. Coefficients are computed once when both params are
     /// `Const`, or recomputed every sample when either is `Signal`.
@@ -63,11 +65,27 @@ pub fn compile(node: NodeDef, sample_rate: u32) -> Box<dyn SampleSource> {
         NodeDef::Oscillator { shape, frequency } => {
             Box::new(Oscillator::new(shape, frequency, sample_rate))
         }
-        NodeDef::FmOscillator { shape, frequency } => {
-            if let ParamDef::Const(v) = frequency {
-                return Box::new(Oscillator::new(shape, v, sample_rate));
-            }
-            Box::new(FmSource { shape, sample_rate, phase: 0, freq: compile_param(frequency, sample_rate) })
+        NodeDef::PmOscillator { shape, frequency, feedback } => {
+            // Carrier freq lives in `offset`; modulation lives in node/depth/scale.
+            // We split them so PmSource can advance phase by carrier freq only and
+            // add the modulation (including self-feedback) directly to the phase.
+            let (carrier_freq, modulator) = match frequency {
+                ParamDef::Const(v) => (v, CompiledParam::Const(0.0)),
+                ParamDef::Signal { node, scale, offset } => (
+                    offset,
+                    CompiledParam::Signal { source: compile(*node, sample_rate), scale, offset: 0.0 },
+                ),
+                ParamDef::ModSignal { node, depth, scale, offset } => (
+                    offset,
+                    CompiledParam::ModSignal {
+                        source: compile(*node, sample_rate),
+                        depth:  compile(*depth, sample_rate),
+                        scale,
+                        offset: 0.0,
+                    },
+                ),
+            };
+            Box::new(PmSource { shape, sample_rate, phase: 0, carrier_freq, modulator, feedback, prev_output: 0.0 })
         }
         NodeDef::Filter { kind, cutoff_hz, q, source } => {
             let init_cutoff = param_initial_value(&cutoff_hz);
@@ -149,22 +167,34 @@ fn compile_param(param: ParamDef, sample_rate: u32) -> CompiledParam {
     }
 }
 
-/// Oscillator whose instantaneous frequency is driven by a [`CompiledParam`].
-/// This correctly handles `ModSignal` (depth-enveloped FM) and plain `Signal`.
-struct FmSource {
-    shape:       OscillatorShape,
-    sample_rate: u32,
-    phase:       u32,
-    freq:        CompiledParam,
+/// Phase-modulation oscillator. The carrier advances at `carrier_freq` Hz;
+/// `modulator` (in cycles) is added directly to the phase each sample.
+/// `feedback` scales the previous output back into the phase — DX7-style
+/// operator self-feedback for waveform distortion and harmonic enrichment.
+struct PmSource {
+    shape:        OscillatorShape,
+    sample_rate:  u32,
+    phase:        u32,
+    carrier_freq: f64,
+    modulator:    CompiledParam,
+    feedback:     f64,
+    prev_output:  f64,
 }
 
-impl SampleSource for FmSource {
+impl SampleSource for PmSource {
     fn next_samples(&mut self, buf: &mut [f64]) {
         for sample in buf.iter_mut() {
-            let freq = self.freq.next_value().max(0.0);
-            let t    = self.phase as f64 / u32::MAX as f64;
-            *sample  = waveform(self.shape, t);
-            let inc  = (freq / self.sample_rate as f64 * (u32::MAX as f64 + 1.0)) as u32;
+            // Phase deviation in cycles from modulator + self-feedback.
+            let mod_phase = self.modulator.next_value()
+                          + self.feedback * self.prev_output;
+            // Carrier phase in 0..1, then offset by modulation.
+            let base = self.phase as f64 / (u32::MAX as f64 + 1.0);
+            // rem_euclid keeps the result in [0, 1) even for negative mod_phase.
+            let t = (base + mod_phase).rem_euclid(1.0);
+            *sample = waveform(self.shape, t);
+            self.prev_output = *sample;
+            let inc = (self.carrier_freq.max(0.0) / self.sample_rate as f64
+                       * (u32::MAX as f64 + 1.0)) as u32;
             self.phase = self.phase.wrapping_add(inc);
         }
     }

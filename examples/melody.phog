@@ -4,4 +4,4 @@ bass = patch {
     | adsr { attack = 0.02, decay = 0.08, sustain = 0.6, release = 0.12 }
 }
 
-melody = phrase { dur=eighth, tempo=120, [c d# c d# c d] } | bass
+melody = phrase { dur=eighth, tempo=120, [c d eb f g ab bb c5] } | bass
